@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gemini CAD</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              'primary': '#4285F4', // Google Blue
+              'primary-focus': '#3367D6',
+              'primary-content': '#FFFFFF',
+              'secondary': '#DB4437', // Google Red
+              'accent': '#0F9D58',   // Google Green
+              'neutral': '#424242',
+              'base-100': '#FFFFFF',
+              'base-200': '#F1F3F4',
+              'base-300': '#E8EAED',
+              'base-content': '#202124',
+              'dark-base-100': '#202124',
+              'dark-base-200': '#303134',
+              'dark-base-300': '#3C4043',
+              'dark-base-content': '#E8EAED',
+            }
+          }
+        }
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.29.0",
+    "uuid": "https://aistudiocdn.com/uuid@^13.0.0",
+    "immer": "https://aistudiocdn.com/immer@^10.2.0",
+    "nanoid": "https://aistudiocdn.com/nanoid@^5.1.6"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-base-100 dark:bg-dark-base-100">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

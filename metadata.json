@@ -1,0 +1,5 @@
+{
+  "name": "CAP PMC 3.0",
+  "description": "Una aplicación CAD moderna y ligera para dibujo 2D y modelado 3D, impulsada por React y Google Gemini. Esta plataforma proporciona una interfaz intuitiva para arquitectos, ingenieros y diseñadores para crear planos técnicos precisos con funciones asistidas por IA.",
+  "requestFramePermissions": []
+}
