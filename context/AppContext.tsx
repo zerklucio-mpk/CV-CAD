@@ -1,6 +1,6 @@
 
 import React, { createContext, useState, useCallback, useMemo } from 'react';
-import { AnyShape, DrawingProperties, Tool, Unit, SnapMode, AnyShapePropertyUpdates, Point } from '../types';
+import { AnyShape, DrawingProperties, Tool, Unit, SnapMode, AnyShapePropertyUpdates, Point, TemplateImage } from '../types';
 
 // Improved unique ID generator to avoid collisions during batch operations
 const generateId = () => `shape-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -75,6 +75,9 @@ export interface AppContextType {
     canRedo: boolean;
     clipboard: Clipboard | null;
     setClipboard: (clipboard: Clipboard | null) => void;
+    templateImage: TemplateImage | null;
+    setTemplateImage: (template: TemplateImage | null) => void;
+    updateTemplateImage: (updates: Partial<TemplateImage>) => void;
 }
 
 // Create the context
@@ -100,6 +103,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const [snapModes, setSnapModes] = useState<Set<SnapMode>>(new Set(['endpoints', 'midpoints', 'centers', 'inference']));
     const [isOrthoMode, setIsOrthoMode] = useState(true);
     const [clipboard, setClipboard] = useState<Clipboard | null>(null);
+    const [templateImage, setTemplateImage] = useState<TemplateImage | null>(null);
 
     const canUndo = historyIndex > 0;
     const canRedo = historyIndex < history.length - 1;
@@ -190,6 +194,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setHistoryIndex(0);
         setSelectedShapeId(null);
         setClipboard(null);
+        setTemplateImage(null);
         
         const rootElement = document.getElementById('root');
         if (rootElement) {
@@ -227,6 +232,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
     }, []);
 
+    const updateTemplateImage = useCallback((updates: Partial<TemplateImage>) => {
+        setTemplateImage(prev => prev ? { ...prev, ...updates } : null);
+    }, []);
+
     const value = useMemo(() => ({
         shapes,
         addShape,
@@ -256,10 +265,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canRedo,
         clipboard,
         setClipboard,
+        templateImage,
+        setTemplateImage,
+        updateTemplateImage,
     }), [
         shapes, addShape, addShapes, updateShape, deleteShape, deleteShapes, replaceShapes, createNewDrawing, selectedShapeId, activeTool, drawingProperties, 
         setDrawingProperties, viewTransform, unit, snapModes, toggleSnapMode, isOrthoMode, 
-        undo, redo, canUndo, canRedo, clipboard
+        undo, redo, canUndo, canRedo, clipboard, templateImage, updateTemplateImage
     ]);
 
     return (

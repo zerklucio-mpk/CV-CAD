@@ -18,6 +18,19 @@ interface ShapeBase {
   properties: DrawingProperties;
 }
 
+// Template Image Interface
+export interface TemplateImage {
+    id: string;
+    data: string; // Base64 Data URL
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    opacity: number;
+    isVisible: boolean;
+    fileName: string;
+}
+
 // Specific shape definitions
 export interface Line extends ShapeBase {
   type: 'line';

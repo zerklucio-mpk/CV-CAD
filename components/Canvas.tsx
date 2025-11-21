@@ -245,12 +245,28 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
         case 'rectangle': {
             const s = shape as Partial<Rectangle>;
             if (s.x === undefined || s.y === undefined || s.width === undefined || s.height === undefined) return null;
-            const centerX = s.x + s.width / 2;
-            const centerY = s.y + s.height / 2;
+            
+            // FIX: Normalize for visual rendering (SVG does not handle negative width/height)
+            let renderX = s.x;
+            let renderY = s.y;
+            let renderW = s.width;
+            let renderH = s.height;
+
+            if (renderW < 0) {
+                renderX += renderW;
+                renderW = Math.abs(renderW);
+            }
+            if (renderH < 0) {
+                renderY += renderH;
+                renderH = Math.abs(renderH);
+            }
+
+            const centerX = renderX + renderW / 2;
+            const centerY = renderY + renderH / 2;
             const transform = s.rotation ? `rotate(${-s.rotation}, ${centerX}, ${centerY})` : undefined;
             return (
                 <g>
-                    <rect x={s.x} y={s.y} width={s.width} height={s.height} transform={transform} {...props} />
+                    <rect x={renderX} y={renderY} width={renderW} height={renderH} transform={transform} {...props} />
                     {isSelected && (
                         <g transform={transform}>
                              <line x1={centerX - 5} y1={centerY} x2={centerX + 5} y2={centerY} stroke="#00A8FF" strokeWidth="1" />
@@ -424,7 +440,8 @@ const Canvas: React.FC = () => {
     const {
         shapes, addShapes, addShape, activeTool, setActiveTool, drawingProperties, viewTransform,
         selectedShapeId, setSelectedShapeId, snapModes, isOrthoMode, unit,
-        clipboard, setClipboard, updateShape, replaceShapes, deleteShape, deleteShapes
+        clipboard, setClipboard, updateShape, replaceShapes, deleteShape, deleteShapes,
+        templateImage
     } = useAppContext();
     const { setViewTransform } = useAppContext();
 
@@ -626,13 +643,13 @@ const Canvas: React.FC = () => {
                         setDraggingHandle({ 
                             shapeId: selectedShapeId, 
                             handleIndex: 'rotate', 
-                            originalShape: JSON.parse(JSON.stringify(selectedShape))
+                            originalShape: JSON.parse(JSON.stringify(selectedShape)) as AnyShape
                         });
                          setRotateState({
                             startAngle: angle(subtract(startPos, center)),
                             initialRotation: currentRot,
                             center,
-                            originalShape: JSON.parse(JSON.stringify(selectedShape))
+                            originalShape: JSON.parse(JSON.stringify(selectedShape)) as AnyShape
                         });
                         return;
                     }
@@ -642,7 +659,7 @@ const Canvas: React.FC = () => {
                         setDraggingHandle({ 
                             shapeId: selectedShapeId, 
                             handleIndex: clickedHandleIndex, 
-                            originalShape: JSON.parse(JSON.stringify(selectedShape))
+                            originalShape: JSON.parse(JSON.stringify(selectedShape)) as AnyShape
                         });
                         return;
                     }
@@ -672,7 +689,7 @@ const Canvas: React.FC = () => {
                              startAngle: angle(subtract(startPos, center)),
                              initialRotation: currentRot,
                              center,
-                             originalShape: JSON.parse(JSON.stringify(shape))
+                             originalShape: JSON.parse(JSON.stringify(shape)) as AnyShape
                         });
                   }
              }
@@ -824,7 +841,7 @@ const Canvas: React.FC = () => {
                          const currentIds = highlightedShapeIds.has(hitId) ? highlightedShapeIds : new Set([hitId]);
                          currentIds.forEach(id => {
                              const s = shapes.find(x => x.id === id);
-                             if(s) groupOriginals[id] = JSON.parse(JSON.stringify(s));
+                             if(s) groupOriginals[id] = JSON.parse(JSON.stringify(s)) as AnyShape;
                          });
                          setDraggingHandle({ shapeId: hitId, handleIndex: 'move', originalShape: shapes.find(s=>s.id===hitId)!, groupOriginals });
                          setDragStartPos(startWorld);
@@ -832,7 +849,7 @@ const Canvas: React.FC = () => {
                          // Single drag
                          setSelectedShapeId(hitId);
                          setHighlightedShapeIds(new Set([hitId]));
-                         setDraggingHandle({ shapeId: hitId, handleIndex: 'move', originalShape: JSON.parse(JSON.stringify(shapes.find(s=>s.id===hitId)!)) });
+                         setDraggingHandle({ shapeId: hitId, handleIndex: 'move', originalShape: JSON.parse(JSON.stringify(shapes.find(s=>s.id===hitId)!)) as AnyShape });
                          setDragStartPos(startWorld);
                      }
                 } else {
@@ -1096,7 +1113,15 @@ const Canvas: React.FC = () => {
         if (currentShape && activeTool !== 'dimension') {
             if (currentShape.type === 'line' && distance(currentShape.p1!, currentShape.p2!) > 0.1) addShape(currentShape as Omit<Line, 'id'>);
             else if (currentShape.type === 'rectangle' && currentShape.width! !== 0 && currentShape.height! !== 0) {
-                 const newRect: Omit<Rectangle, 'id'> = { type: 'rectangle', x: currentShape.width! < 0 ? currentShape.x! + currentShape.width! : currentShape.x!, y: currentShape.height! < 0 ? currentShape.y! + currentShape.height! : currentShape.y!, width: Math.abs(currentShape.width!), height: Math.abs(currentShape.height!), properties: currentShape.properties as DrawingProperties, rotation: 0 };
+                 const newRect: Omit<Rectangle, 'id'> = { 
+                     type: 'rectangle', 
+                     x: currentShape.width! < 0 ? currentShape.x! + currentShape.width! : currentShape.x!, 
+                     y: currentShape.height! < 0 ? currentShape.y! + currentShape.height! : currentShape.y!, 
+                     width: Math.abs(currentShape.width!), 
+                     height: Math.abs(currentShape.height!), 
+                     properties: currentShape.properties as DrawingProperties, 
+                     rotation: 0 
+                 };
                  addShape(newRect);
             } else if (currentShape.type === 'circle' && currentShape.r! > 0.1) addShape(currentShape as Omit<Circle, 'id'>);
         }
@@ -1141,6 +1166,20 @@ const Canvas: React.FC = () => {
                     </marker>
                 </defs>
                 <g transform={`translate(${viewTransform.x}, ${viewTransform.y}) scale(${viewTransform.scale})`}>
+                    
+                    {/* Render Template Image - BELOW GRID */}
+                    {templateImage && templateImage.isVisible && (
+                         <image
+                            href={templateImage.data}
+                            x={templateImage.x}
+                            y={templateImage.y}
+                            width={templateImage.width}
+                            height={templateImage.height}
+                            opacity={templateImage.opacity}
+                            preserveAspectRatio="none"
+                        />
+                    )}
+                    
                     <rect width="50000" height="50000" x="-25000" y="-25000" fill="url(#grid)" />
                      <circle cx="0" cy="0" r={3 / viewTransform.scale} fill="red" />
                     
@@ -1171,7 +1210,14 @@ const Canvas: React.FC = () => {
                     
                     {inferenceLines.map((line, i) => ( <line key={i} x1={line.p1.x} y1={line.p1.y} x2={line.p2.x} y2={line.p2.y} stroke="green" strokeWidth={0.5 / viewTransform.scale} strokeDasharray={`${4/viewTransform.scale}`} /> ))}
 
-                    {selectionRect && ( <rect x={selectionRect.x} y={selectionRect.y} width={selectionRect.width} height={selectionRect.height} fill="rgba(0, 168, 255, 0.2)" stroke="rgba(0, 168, 255, 0.8)" strokeWidth={1 / viewTransform.scale} strokeDasharray={`4 ${2 / viewTransform.scale}`} /> )}
+                    {selectionRect && (() => {
+                         // Normalization for Selection Box
+                         const rX = selectionRect.width < 0 ? selectionRect.x + selectionRect.width : selectionRect.x;
+                         const rY = selectionRect.height < 0 ? selectionRect.y + selectionRect.height : selectionRect.y;
+                         const rW = Math.abs(selectionRect.width);
+                         const rH = Math.abs(selectionRect.height);
+                         return <rect x={rX} y={rY} width={rW} height={rH} fill="rgba(0, 168, 255, 0.2)" stroke="rgba(0, 168, 255, 0.8)" strokeWidth={1 / viewTransform.scale} strokeDasharray={`4 ${2 / viewTransform.scale}`} />;
+                    })()}
 
                     {activeTool === 'trim' && hoveredTrimSegment && (() => {
                          const { geometry } = hoveredTrimSegment; const s = 4 / viewTransform.scale;
@@ -1207,8 +1253,9 @@ const Canvas: React.FC = () => {
                          const delta = subtract(currentPos, dragStartPos); 
                          const groupOriginals = handle.groupOriginals as Record<string, AnyShape>;
                          return Object.entries(groupOriginals).map(([id, origShape]) => {
-                            const shape = origShape; 
-                            let previewShape = JSON.parse(JSON.stringify(shape)) as AnyShape;
+                            const shape = origShape as AnyShape; 
+                            const previewShape = JSON.parse(JSON.stringify(shape)) as AnyShape;
+
                             if (previewShape.type === 'line') { 
                                 previewShape.p1 = add(previewShape.p1, delta); 
                                 previewShape.p2 = add(previewShape.p2, delta); 
@@ -1234,11 +1281,14 @@ const Canvas: React.FC = () => {
                         return idsToPreview.map(id => {
                             const original = shapes.find(s => s.id === id); 
                             if (!original) return null;
-                            let previewShape = JSON.parse(JSON.stringify(original)) as AnyShape;
+                            const previewShape = JSON.parse(JSON.stringify(original)) as AnyShape;
+
                             if (previewShape.type === 'line' || previewShape.type === 'dimension') { 
                                 previewShape.p1 = add(previewShape.p1, delta); 
                                 previewShape.p2 = add(previewShape.p2, delta); 
-                                if (previewShape.type === 'dimension') previewShape.offsetPoint = add(previewShape.offsetPoint, delta); 
+                                if (previewShape.type === 'dimension') {
+                                    previewShape.offsetPoint = add(previewShape.offsetPoint, delta); 
+                                }
                             } else if (previewShape.type === 'rectangle' || previewShape.type === 'text' || previewShape.type === 'symbol') { 
                                 previewShape.x += delta.x; 
                                 previewShape.y += delta.y; 
@@ -1252,7 +1302,7 @@ const Canvas: React.FC = () => {
                     
                     {((activeTool === 'rotate' || draggingHandle?.handleIndex === 'rotate') && rotateState && selectedShapeId) ? (() => {
                          const s = shapes.find(x=>x.id===selectedShapeId); if(!s) return null;
-                         let previewShape = JSON.parse(JSON.stringify(s)) as AnyShape;
+                         const previewShape: AnyShape = JSON.parse(JSON.stringify(s));
                          const currentAngle = angle(subtract(worldMousePos, rotateState.center));
                          const deltaAngle = currentAngle - rotateState.startAngle;
                          if (previewShape.type === 'rectangle' || previewShape.type === 'symbol' || previewShape.type === 'text') { previewShape.rotation = (rotateState.initialRotation + deltaAngle) % 360; } else if (previewShape.type === 'line' || previewShape.type === 'dimension') { const orig = rotateState.originalShape as (Line | Dimension); const rotateP = (p: Point) => rotatePoint(p, rotateState.center, deltaAngle); previewShape.p1 = rotateP(orig.p1); previewShape.p2 = rotateP(orig.p2); if (previewShape.type === 'dimension' && 'offsetPoint' in orig) previewShape.offsetPoint = rotateP((orig as Dimension).offsetPoint); }
