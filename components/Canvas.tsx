@@ -1,7 +1,7 @@
 
 import React, { useRef, useState, PointerEvent as ReactPointerEvent, useEffect, useMemo, useCallback } from 'react';
 import { useAppContext } from '../hooks/useAppContext';
-import { AnyShape, Point, Line, Rectangle, Circle, Dimension, SnapMode, Unit, DrawingProperties, Text, AnyShapePropertyUpdates, SymbolShape } from '../types';
+import { AnyShape, Point, Line, Rectangle, Circle, Dimension, SnapMode, Unit, DrawingProperties, Text, AnyShapePropertyUpdates, SymbolShape, LineType } from '../types';
 
 // --- Vector Math Helpers ---
 const add = (p1: Point, p2: Point): Point => ({ x: p1.x + p2.x, y: p1.y + p2.y });
@@ -60,6 +60,46 @@ const describeArc = (x: number, y: number, radius: number, startAngle: number, e
         "A", radius, radius, 0, largeArcFlag, 0, endPt.x, endPt.y
     ].join(" ");
 }
+
+// Helper: Calculate Circle Center/Radius from 3 Points
+const getCircleFromThreePoints = (p1: Point, p2: Point, p3: Point): { cx: number, cy: number, r: number } | null => {
+    const x1 = p1.x, y1 = p1.y;
+    const x2 = p2.x, y2 = p2.y;
+    const x3 = p3.x, y3 = p3.y;
+
+    const D = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2));
+    
+    // Check for collinearity (Determinant is close to zero)
+    if (Math.abs(D) < 1e-6) return null; 
+
+    const Ux = ((x1 * x1 + y1 * y1) * (y2 - y3) + (x2 * x2 + y2 * y2) * (y3 - y1) + (x3 * x3 + y3 * y3) * (y1 - y2)) / D;
+    const Uy = ((x1 * x1 + y1 * y1) * (x3 - x2) + (x2 * x2 + y2 * y2) * (x1 - x3) + (x3 * x3 + y3 * y3) * (x2 - x1)) / D;
+
+    const r = Math.sqrt(Math.pow(x1 - Ux, 2) + Math.pow(y1 - Uy, 2));
+
+    return { cx: Ux, cy: Uy, r: r };
+};
+
+// Helper: Calculate Arcs based on 3 Points direction
+const getArcAngles = (p1: Point, p2: Point, p3: Point, center: Point): { startAngle: number, endAngle: number } => {
+    const a1 = angle(subtract(p1, center));
+    const a2 = angle(subtract(p2, center));
+    const a3 = angle(subtract(p3, center));
+
+    // Calculate relative angles to check order
+    let r2 = a2 - a1; if(r2 < 0) r2 += 360;
+    let r3 = a3 - a1; if(r3 < 0) r3 += 360;
+
+    // SVG arcs draw CCW.
+    // If r2 < r3, then p1->p2->p3 is CCW. We draw from a1 to a3.
+    // If r2 > r3, then p1->p2->p3 is CW. To hit all points, we must draw from a3 to a1 (which wraps around p2).
+    
+    if (r2 < r3) {
+        return { startAngle: a1, endAngle: a3 };
+    } else {
+        return { startAngle: a3, endAngle: a1 };
+    }
+};
 
 // --- Helper to get Rotation Handle Position ---
 const getRotationHandlePos = (shape: AnyShape): { handle: Point, center: Point } | null => {
@@ -189,10 +229,18 @@ const getShapeSnapPoints = (shape: AnyShape): { point: Point, type: SnapMode, sh
             break;
         case 'circle':
             addP({ x: shape.cx, y: shape.cy }, 'centers');
-            addP({ x: shape.cx + shape.r, y: shape.cy }, 'endpoints');
-            addP({ x: shape.cx - shape.r, y: shape.cy }, 'endpoints');
-            addP({ x: shape.cx, y: shape.cy + shape.r }, 'endpoints');
-            addP({ x: shape.cx, y: shape.cy - shape.r }, 'endpoints');
+            if (shape.startAngle !== undefined && shape.endAngle !== undefined) {
+                 // Arc Snap Points
+                 addP(polarToCartesian(shape.cx, shape.cy, shape.r, shape.startAngle), 'endpoints');
+                 addP(polarToCartesian(shape.cx, shape.cy, shape.r, shape.endAngle), 'endpoints');
+                 // Add midpoint of arc?
+            } else {
+                 // Full Circle Snap Points
+                 addP({ x: shape.cx + shape.r, y: shape.cy }, 'endpoints');
+                 addP({ x: shape.cx - shape.r, y: shape.cy }, 'endpoints');
+                 addP({ x: shape.cx, y: shape.cy + shape.r }, 'endpoints');
+                 addP({ x: shape.cx, y: shape.cy - shape.r }, 'endpoints');
+            }
             break;
         case 'text':
             addP({ x: shape.x, y: shape.y }, 'endpoints');
@@ -212,13 +260,25 @@ const getShapeSnapPoints = (shape: AnyShape): { point: Point, type: SnapMode, sh
     return points;
 };
 
+const getStrokeDashArray = (lineType: LineType | undefined): string | undefined => {
+    switch (lineType) {
+        case 'dashed': return '10 5';
+        case 'dotted': return '2 4';
+        case 'dash-dot': return '10 4 2 4';
+        default: return undefined;
+    }
+};
+
 const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected: boolean; isHighlighted?: boolean; conversionFactor: number; isPreview?: boolean; isGhost?: boolean; }> = React.memo(({ shape, isSelected, isHighlighted = false, conversionFactor, isPreview = false, isGhost = false }) => {
     const effectivelySelected = isSelected || isHighlighted;
+    
+    const strokeDasharray = effectivelySelected ? '4 2' : getStrokeDashArray(shape.properties?.lineType);
+
     const props = {
         stroke: effectivelySelected ? '#00A8FF' : (shape.properties?.color || '#FFFFFF'),
         fill: shape.properties?.fill || 'transparent',
         strokeWidth: shape.properties?.strokeWidth || 1,
-        strokeDasharray: effectivelySelected ? '4 2' : undefined,
+        strokeDasharray: strokeDasharray,
         opacity: isGhost ? 0.2 : (isPreview ? 0.5 : 1),
     };
     
@@ -286,6 +346,14 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
             const s = shape as Partial<Circle>;
             if (s.cx === undefined || s.cy === undefined || s.r === undefined) return null;
             const isArc = s.startAngle !== undefined && s.endAngle !== undefined && Math.abs(s.endAngle - s.startAngle) < 359.9;
+            
+            let arcStartPt = null;
+            let arcEndPt = null;
+            if (isArc) {
+                 arcStartPt = polarToCartesian(s.cx, s.cy, s.r, s.startAngle!);
+                 arcEndPt = polarToCartesian(s.cx, s.cy, s.r, s.endAngle!);
+            }
+
             return (
                 <g>
                     {isArc ? (
@@ -299,6 +367,17 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
                                 <line x1={-4} y1={0} x2={4} y2={0} stroke="#00A8FF" strokeWidth="1" />
                                 <line x1={0} y1={-4} x2={0} y2={4} stroke="#00A8FF" strokeWidth="1" />
                              </g>
+                             
+                             {/* Specific Arc Selection Visuals */}
+                             {isArc && arcStartPt && arcEndPt && (
+                                 <g>
+                                     <circle cx={arcStartPt.x} cy={arcStartPt.y} r={3} fill="#00A8FF" stroke="none" />
+                                     <circle cx={arcEndPt.x} cy={arcEndPt.y} r={3} fill="#00A8FF" stroke="none" />
+                                     <line x1={s.cx} y1={s.cy} x2={arcStartPt.x} y2={arcStartPt.y} stroke="#00A8FF" strokeWidth="0.5" strokeDasharray="2 2" opacity="0.5" />
+                                     <line x1={s.cx} y1={s.cy} x2={arcEndPt.x} y2={arcEndPt.y} stroke="#00A8FF" strokeWidth="0.5" strokeDasharray="2 2" opacity="0.5" />
+                                 </g>
+                             )}
+
                              {rotData && !isArc && (
                                 <g>
                                     <line x1={s.cx} y1={s.cy} x2={rotData.handle.x} y2={rotData.handle.y} stroke="#00A8FF" strokeWidth="1" />
@@ -415,6 +494,9 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
                 case 'rack': content = (<g transform={innerTransform}><rect x="2" y="2" width="20" height="20" strokeWidth="2" /><line x1="2" y1="8" x2="22" y2="8" strokeWidth="1.5" /><line x1="2" y1="16" x2="22" y2="16" strokeWidth="1.5" /><line x1="7" y1="2" x2="7" y2="22" strokeWidth="1.5" /><line x1="17" y1="2" x2="17" y2="22" strokeWidth="1.5" /></g>); break;
                 case 'conveyor': content = (<g transform={innerTransform}><rect x="2" y="6" width="20" height="12" rx="2" strokeWidth="2"  /><circle cx="6" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="2" fill="currentColor" stroke="none"/></g>); break;
                 case 'container': content = (<g transform={innerTransform}><rect x="2" y="4" width="20" height="16" strokeWidth="2"  /><line x1="6" y1="4" x2="6" y2="20" strokeWidth="1.5" /><line x1="10" y1="4" x2="10" y2="20" strokeWidth="1.5" /><line x1="14" y1="4" x2="14" y2="20" strokeWidth="1.5" /><line x1="18" y1="4" x2="18" y2="20" strokeWidth="1.5" /><rect x="6" y="8" width="12" height="8" rx="1" fill="currentColor" fillOpacity="0.2" stroke="none" /></g>); break;
+                // Architecture Symbols
+                case 'door': content = (<g transform={innerTransform}><path d="M3 21V3" strokeWidth="2" /><path d="M3 3h14v18" strokeWidth="1.5" strokeDasharray="2 2" /><path d="M17 21H3" strokeWidth="2" /><path d="M3 21c9.941 0 18-8.059 18-18" strokeDasharray="2 2" strokeWidth="1.5" fill="none" /></g>); break;
+                case 'window': content = (<g transform={innerTransform}><rect x="3" y="6" width="18" height="12" strokeWidth="2" /><line x1="3" y1="12" x2="21" y2="12" strokeWidth="1.5" /><line x1="12" y1="6" x2="12" y2="18" strokeWidth="1.5" /></g>); break;
             }
             return (
                 <g>
@@ -452,6 +534,10 @@ const Canvas: React.FC = () => {
     const [panStart, setPanStart] = useState<Point | null>(null);
     const [currentShape, setCurrentShape] = useState<Partial<AnyShape> | null>(null);
     const [dimensionStep, setDimensionStep] = useState(0);
+    // Arc Tool State
+    const [arcStep, setArcStep] = useState(0);
+    const [arcPoints, setArcPoints] = useState<Point[]>([]);
+    
     const [selectionRect, setSelectionRect] = useState<Rectangle | null>(null);
     const [highlightedShapeIds, setHighlightedShapeIds] = useState<Set<string>>(new Set());
 
@@ -476,6 +562,8 @@ const Canvas: React.FC = () => {
     const [moveBasePoint, setMoveBasePoint] = useState<Point | null>(null);
     const [rotateState, setRotateState] = useState<{ startAngle: number, initialRotation: number, center: Point, originalShape: AnyShape } | null>(null);
     
+    const MAX_SAFE_RADIUS = 500000; // Threshold to fallback to line if radius is infinite/huge
+
     useEffect(() => {
         if (svgRef.current) {
             const rect = svgRef.current.getBoundingClientRect();
@@ -500,8 +588,8 @@ const Canvas: React.FC = () => {
             if (e.key === 'Escape') {
                 e.preventDefault();
                 let handled = false;
-                if (currentShape || dimensionStep > 0 || draggingHandle || panStart || isInteractingRef.current || activeTool === 'paste') {
-                    setCurrentShape(null); setDimensionStep(0); setDraggingHandle(null); setPanStart(null);
+                if (currentShape || dimensionStep > 0 || arcStep > 0 || draggingHandle || panStart || isInteractingRef.current || activeTool === 'paste') {
+                    setCurrentShape(null); setDimensionStep(0); setArcStep(0); setArcPoints([]); setDraggingHandle(null); setPanStart(null);
                     if (activeTool === 'paste') setClipboard(null);
                     isInteractingRef.current = false; handled = true;
                 }
@@ -546,11 +634,12 @@ const Canvas: React.FC = () => {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedShapeId, shapes, updateShape, deleteShape, deleteShapes, setSelectedShapeId, activeTool, setActiveTool, currentShape, dimensionStep, draggingHandle, panStart, highlightedShapeIds]);
+    }, [selectedShapeId, shapes, updateShape, deleteShape, deleteShapes, setSelectedShapeId, activeTool, setActiveTool, currentShape, dimensionStep, draggingHandle, panStart, highlightedShapeIds, arcStep]);
 
     useEffect(() => {
         setHoveredTrimSegment(null); setHoveredExtendPreview(null); setMoveBasePoint(null); setRotateState(null);
         if (activeTool !== 'dimension') { setHoveredDimensionTarget(null); setDimensionStep(0); if (currentShape?.type === 'dimension') setCurrentShape(null); }
+        if (activeTool !== 'arc') { setArcStep(0); setArcPoints([]); if (currentShape?.type === 'circle' && (currentShape as any).startAngle !== undefined) setCurrentShape(null); }
         setDraggingHandle(null);
     }, [activeTool]);
 
@@ -671,6 +760,50 @@ const Canvas: React.FC = () => {
             return; 
         }
 
+        if (activeTool === 'arc') {
+            if (arcStep === 0) {
+                // First Point (Start)
+                setArcPoints([snapPos]);
+                setArcStep(1);
+                setCurrentShape(null); // Clear any phantom shape
+            } else if (arcStep === 1) {
+                // Second Point (Through/Mid)
+                setArcPoints(prev => [...prev, snapPos]);
+                setArcStep(2);
+            } else if (arcStep === 2) {
+                // Third Point (End) -> Create Shape
+                const [p1, p2] = arcPoints;
+                const p3 = snapPos;
+                const circleData = getCircleFromThreePoints(p1, p2, p3);
+                
+                if (circleData && circleData.r < MAX_SAFE_RADIUS) {
+                    const { cx, cy, r } = circleData;
+                    const { startAngle, endAngle } = getArcAngles(p1, p2, p3, {x: cx, y: cy});
+                    
+                    addShape({
+                        type: 'circle',
+                        cx, cy, r,
+                        startAngle, endAngle,
+                        properties: drawingProperties
+                    });
+                } else {
+                    // Fallback: Create a straight line if collinear or infinite radius
+                    addShape({
+                        type: 'line',
+                        p1: p1,
+                        p2: p3,
+                        properties: drawingProperties
+                    });
+                }
+                setArcStep(0);
+                setArcPoints([]);
+                setCurrentShape(null);
+                setActiveTool('select');
+                isInteractingRef.current = false;
+            }
+            return;
+        }
+
         if (activeTool === 'rotate') {
              const hitId = getHitTest(startPos, 5 / viewTransform.scale);
              const targetId = hitId || selectedShapeId;
@@ -758,7 +891,7 @@ const Canvas: React.FC = () => {
         }
         
         if (activeTool === 'copy-area') {
-            setSelectionRect({ type: 'rectangle', id: 'selection', x: startPos.x, y: startPos.y, width: 0, height: 0, properties: { color: '', fill: '', strokeWidth: 0 }});
+            setSelectionRect({ type: 'rectangle', id: 'selection', x: startPos.x, y: startPos.y, width: 0, height: 0, properties: { color: '', fill: '', strokeWidth: 0, lineType: 'solid' }});
             return;
         }
         
@@ -854,7 +987,7 @@ const Canvas: React.FC = () => {
                      }
                 } else {
                     // Drag on empty space -> Box Selection
-                    setSelectionRect({ type: 'rectangle', id: 'selection', x: startWorld.x, y: startWorld.y, width: 0, height: 0, properties: { color: '', fill: '', strokeWidth: 0 }});
+                    setSelectionRect({ type: 'rectangle', id: 'selection', x: startWorld.x, y: startWorld.y, width: 0, height: 0, properties: { color: '', fill: '', strokeWidth: 0, lineType: 'solid' }});
                 }
                 setDragStartScreenPos(null); // Consumed
             } else {
@@ -910,7 +1043,7 @@ const Canvas: React.FC = () => {
             setHoveredExtendPreview(extendCandidate);
         }
 
-        if (isInteractingRef.current || activeTool === 'move' || activeTool === 'rotate' || activeTool === 'trim' || activeTool === 'extend' || ['line', 'rectangle', 'circle', 'dimension', 'text'].includes(activeTool) || draggingHandle) {
+        if (isInteractingRef.current || activeTool === 'move' || activeTool === 'rotate' || activeTool === 'trim' || activeTool === 'extend' || ['line', 'rectangle', 'circle', 'dimension', 'text', 'arc'].includes(activeTool) || draggingHandle) {
             const snapThreshold = 10 / viewTransform.scale;
             const hitId = getHitTest(worldPos, snapThreshold);
             const ignoreId = draggingHandle?.shapeId || selectedShapeId;
@@ -939,6 +1072,43 @@ const Canvas: React.FC = () => {
         }
         
         setHoveredShapeId(currentHoveredId); setActiveSnapPoint(currentSnapPoint); setInferenceLines(currentInferenceLines);
+
+        if (activeTool === 'arc') {
+            if (arcStep === 1) {
+                // Preview line from P1 to Mouse
+                setCurrentShape({
+                    type: 'line',
+                    p1: arcPoints[0],
+                    p2: finalPos,
+                    properties: { ...drawingProperties, color: '#00A8FF', lineType: 'dashed' }
+                });
+            } else if (arcStep === 2) {
+                // Preview Arc through P1, P2, Mouse
+                const p1 = arcPoints[0];
+                const p2 = arcPoints[1];
+                const p3 = finalPos;
+                const circleData = getCircleFromThreePoints(p1, p2, p3);
+                
+                if (circleData && circleData.r < MAX_SAFE_RADIUS) {
+                    const { cx, cy, r } = circleData;
+                    const { startAngle, endAngle } = getArcAngles(p1, p2, p3, {x: cx, y: cy});
+                    setCurrentShape({
+                        type: 'circle',
+                        cx, cy, r,
+                        startAngle, endAngle,
+                        properties: drawingProperties
+                    });
+                } else {
+                    // Fallback preview: straight line
+                     setCurrentShape({
+                        type: 'line',
+                        p1: p1,
+                        p2: p3,
+                        properties: drawingProperties
+                    });
+                }
+            }
+        }
 
         if (draggingHandle) {
             const { shapeId, handleIndex, originalShape, groupOriginals } = draggingHandle;
@@ -1006,7 +1176,7 @@ const Canvas: React.FC = () => {
                       let w = finalPos.x - start.x; let h = finalPos.y - start.y;
                       if(e.shiftKey) { const max = Math.max(Math.abs(w), Math.abs(h)); w = w<0?-max:max; h = h<0?-max:max; }
                       setCurrentShape({ ...currentShape, width: w, height: h });
-                 } else if (currentShape.type === 'circle') {
+                 } else if (currentShape.type === 'circle' && activeTool === 'circle') {
                       setCurrentShape({ ...currentShape, r: distance({x: currentShape.cx!, y: currentShape.cy!}, finalPos) });
                  }
             }
@@ -1022,8 +1192,8 @@ const Canvas: React.FC = () => {
                 return corners.every(isPointInBounds);
             }
             case 'circle': {
-                const circleBounds = { x1: shape.cx - shape.r, y1: shape.cy - shape.r, x2: shape.cx + shape.r, y2: shape.cy + shape.r };
-                return circleBounds.x1 >= bounds.x && circleBounds.x2 <= bounds.x + bounds.width && circleBounds.y1 >= bounds.y && circleBounds.y2 <= bounds.y + bounds.height;
+                const circleBounds = { x1: shape.cx - shape.r, y1: shape.cy - shape.r, x2: shape.cx + shape.r, y2: shape.cy + shape.r, x3: shape.cx, y3: shape.cy };
+                return isPointInBounds({x: shape.cx, y: shape.cy}); // Simplified for center select in box
             }
             case 'dimension': return isPointInBounds(shape.p1) && isPointInBounds(shape.p2);
             case 'text': return isPointInBounds({x: shape.x, y: shape.y});
@@ -1058,6 +1228,7 @@ const Canvas: React.FC = () => {
         }
 
         if (activeTool === 'move' && moveBasePoint) return;
+        if (activeTool === 'arc' && arcStep > 0) return; // Continue arc interaction
         
         if ((activeTool === 'rotate' || draggingHandle?.handleIndex === 'rotate') && rotateState && selectedShapeId) {
              const currentAngle = angle(subtract(worldMousePos, rotateState.center));
@@ -1199,6 +1370,19 @@ const Canvas: React.FC = () => {
 
                     {currentShape && <ShapeRenderer shape={currentShape as AnyShape} isSelected={false} conversionFactor={conversionFactor} />}
                     
+                     {/* Arc Tool: Point Markers (New Feature) */}
+                     {activeTool === 'arc' && arcPoints.length > 0 && (
+                        <g>
+                            {/* Point 1 (Start) - Always visible if length > 0 */}
+                            <circle cx={arcPoints[0].x} cy={arcPoints[0].y} r={4 / viewTransform.scale} fill="#00A8FF" />
+                            
+                            {/* Point 2 (Through) - Visible when placing 3rd point */}
+                            {arcPoints.length > 1 && (
+                                <circle cx={arcPoints[1].x} cy={arcPoints[1].y} r={4 / viewTransform.scale} fill="#00A8FF" opacity="0.7" />
+                            )}
+                        </g>
+                     )}
+                    
                      {hoveredShapeId && (() => {
                          const shape = shapes.find(s => s.id === hoveredShapeId); if (!shape) return null;
                          return getShapeSnapPoints(shape).map((sp, i) => ( <circle key={i} cx={sp.point.x} cy={sp.point.y} r={5 / viewTransform.scale} fill="cyan" fillOpacity="0.5" /> ));
@@ -1242,8 +1426,19 @@ const Canvas: React.FC = () => {
                     {activeTool === 'dimension' && hoveredDimensionTarget && hoveredDimensionTarget.type === 'circle' && ( <circle cx={hoveredDimensionTarget.p1.x} cy={hoveredDimensionTarget.p1.y} r={distance(hoveredDimensionTarget.p1, hoveredDimensionTarget.p2)} fill="none" stroke="cyan" strokeWidth={2 / viewTransform.scale} strokeDasharray={`${4/viewTransform.scale}`} /> )}
 
                     {activeTool === 'paste' && clipboard && clipboard.shapes.map(shape => {
-                        const translation = subtract(worldMousePos, clipboard.origin); const newShape: AnyShape = JSON.parse(JSON.stringify(shape));
-                         if (newShape.type === 'line' || newShape.type === 'dimension') { newShape.p1 = add(newShape.p1, translation); newShape.p2 = add(newShape.p2, translation); if(newShape.type === 'dimension') newShape.offsetPoint = add(newShape.offsetPoint, translation); } else if (newShape.type === 'rectangle' || newShape.type === 'text' || newShape.type === 'symbol') { newShape.x += translation.x; newShape.y += translation.y; } else if (newShape.type === 'circle') { newShape.cx += translation.x; newShape.cy += translation.y; }
+                        const translation = subtract(worldMousePos, clipboard.origin); 
+                        const newShape = JSON.parse(JSON.stringify(shape)) as AnyShape;
+                        if (newShape.type === 'line' || newShape.type === 'dimension') { 
+                             newShape.p1 = add(newShape.p1, translation); 
+                             newShape.p2 = add(newShape.p2, translation); 
+                             if(newShape.type === 'dimension') newShape.offsetPoint = add(newShape.offsetPoint, translation); 
+                        } else if (newShape.type === 'rectangle' || newShape.type === 'text' || newShape.type === 'symbol') { 
+                             newShape.x += translation.x; 
+                             newShape.y += translation.y; 
+                        } else if (newShape.type === 'circle') { 
+                             newShape.cx += translation.x; 
+                             newShape.cy += translation.y; 
+                        }
                         return <ShapeRenderer key={'preview-' + shape.id} shape={newShape} isSelected={false} conversionFactor={conversionFactor} isPreview={true} />
                     })}
                     
@@ -1252,9 +1447,11 @@ const Canvas: React.FC = () => {
                          const currentPos = activeSnapPoint ? activeSnapPoint.point : worldMousePos; 
                          const delta = subtract(currentPos, dragStartPos); 
                          const groupOriginals = handle.groupOriginals as Record<string, AnyShape>;
-                         return Object.entries(groupOriginals).map(([id, origShape]) => {
-                            const shape = origShape as AnyShape; 
-                            const previewShape = JSON.parse(JSON.stringify(shape)) as AnyShape;
+                         
+                         // Use Object.keys to ensure 'id' is string and access is typed correctly from Record
+                         return Object.keys(groupOriginals).map((id) => {
+                            const shape = groupOriginals[id]; 
+                            const previewShape = JSON.parse(JSON.stringify(shape)) as any as AnyShape;
 
                             if (previewShape.type === 'line') { 
                                 previewShape.p1 = add(previewShape.p1, delta); 
@@ -1281,7 +1478,7 @@ const Canvas: React.FC = () => {
                         return idsToPreview.map(id => {
                             const original = shapes.find(s => s.id === id); 
                             if (!original) return null;
-                            const previewShape = JSON.parse(JSON.stringify(original)) as AnyShape;
+                            const previewShape = JSON.parse(JSON.stringify(original)) as any as AnyShape;
 
                             if (previewShape.type === 'line' || previewShape.type === 'dimension') { 
                                 previewShape.p1 = add(previewShape.p1, delta); 
@@ -1302,7 +1499,7 @@ const Canvas: React.FC = () => {
                     
                     {((activeTool === 'rotate' || draggingHandle?.handleIndex === 'rotate') && rotateState && selectedShapeId) ? (() => {
                          const s = shapes.find(x=>x.id===selectedShapeId); if(!s) return null;
-                         const previewShape: AnyShape = JSON.parse(JSON.stringify(s));
+                         const previewShape = JSON.parse(JSON.stringify(s)) as AnyShape;
                          const currentAngle = angle(subtract(worldMousePos, rotateState.center));
                          const deltaAngle = currentAngle - rotateState.startAngle;
                          if (previewShape.type === 'rectangle' || previewShape.type === 'symbol' || previewShape.type === 'text') { previewShape.rotation = (rotateState.initialRotation + deltaAngle) % 360; } else if (previewShape.type === 'line' || previewShape.type === 'dimension') { const orig = rotateState.originalShape as (Line | Dimension); const rotateP = (p: Point) => rotatePoint(p, rotateState.center, deltaAngle); previewShape.p1 = rotateP(orig.p1); previewShape.p2 = rotateP(orig.p2); if (previewShape.type === 'dimension' && 'offsetPoint' in orig) previewShape.offsetPoint = rotateP((orig as Dimension).offsetPoint); }

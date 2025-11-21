@@ -97,6 +97,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         color: '#FFFFFF',
         fill: 'transparent',
         strokeWidth: 1,
+        lineType: 'solid', // Default line type
     });
     const [viewTransform, setViewTransform] = useState({ x: 0, y: 0, scale: 1 });
     const [unit, setUnit] = useState<Unit>('mm');
@@ -126,12 +127,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const addShape = useCallback((shape: Omit<AnyShape, 'id'>) => {
         const newShape = { ...shape, id: generateId() } as AnyShape;
+        // Ensure properties exist and fallback safely
+        if (!newShape.properties) {
+             newShape.properties = { color: '#FFFFFF', fill: 'transparent', strokeWidth: 1, lineType: 'solid' };
+        } else if (!newShape.properties.lineType) {
+             newShape.properties.lineType = 'solid';
+        }
+
         const newShapes = [...shapes, newShape];
         updateHistory(newShapes);
     }, [shapes, updateHistory]);
 
      const addShapes = useCallback((shapesToAdd: Omit<AnyShape, 'id'>[]) => {
-        const newShapesWithIds = shapesToAdd.map(s => ({ ...s, id: generateId() } as AnyShape));
+        const newShapesWithIds = shapesToAdd.map(s => {
+            const shape = { ...s, id: generateId() } as AnyShape;
+            if (!shape.properties) {
+                 shape.properties = { color: '#FFFFFF', fill: 'transparent', strokeWidth: 1, lineType: 'solid' };
+            } else if (!shape.properties.lineType) {
+                 shape.properties.lineType = 'solid';
+            }
+            return shape;
+        });
         const newShapes = [...shapes, ...newShapesWithIds];
         updateHistory(newShapes);
     }, [shapes, updateHistory]);
@@ -183,7 +199,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const replaceShapes = useCallback((idsToDelete: string[], shapesToAdd: Omit<AnyShape, 'id'>[]) => {
         const deleteSet = new Set(idsToDelete);
         const remainingShapes = shapes.filter(s => !deleteSet.has(s.id));
-        const newShapesWithIds = shapesToAdd.map(s => ({ ...s, id: generateId() } as AnyShape));
+        const newShapesWithIds = shapesToAdd.map(s => {
+            const shape = { ...s, id: generateId() } as AnyShape;
+            if (!shape.properties.lineType) shape.properties.lineType = 'solid';
+            return shape;
+        });
         const newShapes = [...remainingShapes, ...newShapesWithIds];
         updateHistory(newShapes);
     }, [shapes, updateHistory]);

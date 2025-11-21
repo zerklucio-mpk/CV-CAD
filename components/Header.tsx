@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import { useAppContext } from '../hooks/useAppContext';
-import { SnapMode, Unit } from '../types';
+import { SnapMode, Unit, LineType } from '../types';
 import { CheckIcon, SaveIcon, FilePlusIcon, FolderOpenIcon, DownloadIcon, XIcon, ImageIcon, EyeIcon, EyeOffIcon, SettingsIcon, TrashIcon } from './Icon';
 
 const SnapToggle: React.FC<{ label: string, mode: SnapMode }> = ({ label, mode }) => {
@@ -32,6 +32,16 @@ const escapeXml = (unsafe: string) => {
             default: return c;
         }
     });
+};
+
+// Helper for stroke dash array export
+const getStrokeDashArray = (lineType: LineType | undefined): string => {
+    switch (lineType) {
+        case 'dashed': return 'stroke-dasharray="10 5"';
+        case 'dotted': return 'stroke-dasharray="2 4"';
+        case 'dash-dot': return 'stroke-dasharray="10 4 2 4"';
+        default: return '';
+    }
 };
 
 const Header: React.FC = () => {
@@ -446,6 +456,11 @@ const Header: React.FC = () => {
                     <!-- Revision -->
                     ${label(xEnd - (col3W * 0.3) + 1.5*P_SCALE, by + c3Row1H + 3.5*P_SCALE, "REV:")}
                     <text x="${xEnd - (col3W * 0.15)}" y="${by + blockHeight - 6*P_SCALE}" ${textBase} font-size="${4 * P_SCALE}" font-weight="bold" text-anchor="middle">${escapeXml(titleBlockData.revision)}</text>
+
+                    <!-- Logo (Bottom Right of Tech Data) - Placeholder or Custom SVG -->
+                    <g transform="translate(${xEnd - 18*P_SCALE}, ${by + blockHeight - 18*P_SCALE}) scale(${0.1*P_SCALE})">
+                        <!-- Example Mini Logo or blank space -->
+                    </g>
                 </g>
             `;
 
@@ -503,14 +518,15 @@ const Header: React.FC = () => {
             if (config.optimizeLines) strokeWidth = Math.max(strokeWidth, minReadableStroke);
 
             const fill = s.properties.fill !== 'transparent' ? s.properties.fill : 'none';
+            const dashArray = getStrokeDashArray(s.properties.lineType);
 
             if (s.type === 'line') {
-                svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" />`;
+                svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
             } else if (s.type === 'rectangle') {
                 const transform = s.rotation ? `rotate(${-s.rotation}, ${s.x + s.width/2}, ${s.y + s.height/2})` : '';
-                svgContent += `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" stroke="${color}" stroke-width="${strokeWidth}" fill="${fill}" transform="${transform}"/>`;
+                svgContent += `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" stroke="${color}" stroke-width="${strokeWidth}" fill="${fill}" transform="${transform}" ${dashArray} />`;
             } else if (s.type === 'circle') {
-                svgContent += `<circle cx="${s.cx}" cy="${s.cy}" r="${s.r}" stroke="${color}" stroke-width="${strokeWidth}" fill="${fill}" />`;
+                svgContent += `<circle cx="${s.cx}" cy="${s.cy}" r="${s.r}" stroke="${color}" stroke-width="${strokeWidth}" fill="${fill}" ${dashArray} />`;
             } else if (s.type === 'text') {
                  const transform = s.rotation ? `rotate(${-s.rotation}, ${s.x}, ${s.y})` : '';
                  // Escape content for text shapes too
@@ -521,7 +537,7 @@ const Header: React.FC = () => {
                 const size = s.size;
                 const symStroke = config.optimizeLines ? Math.max(1, minReadableStroke * (24/size)) : 1; 
                 const transform = `translate(${s.x}, ${s.y}) rotate(${-rotation}) scale(${size/24}) translate(-12, -12)`;
-                const getStrokeProps = () => `stroke="${color}" stroke-width="${symStroke * (24/size) * strokeWidth}" fill="none" stroke-linecap="round" stroke-linejoin="round"`;
+                const getStrokeProps = () => `stroke="${color}" stroke-width="${symStroke * (24/size) * strokeWidth}" fill="none" stroke-linecap="round" stroke-linejoin="round" ${dashArray}`;
                 
                 let innerPath = '';
                  switch (s.name) {
@@ -542,30 +558,32 @@ const Header: React.FC = () => {
                 svgContent += `<g transform="${transform}">${innerPath}</g>`;
             } else if (s.type === 'dimension') {
                  const factor = unit === 'cm' ? 10 : (unit === 'm' ? 1000 : 1);
+                 // Dimensions usually have solid lines regardless of style, but user might want dashed dimension lines?
+                 // For now, applying to dimension lines too.
                  if (s.subType === 'radial' || s.subType === 'diameter') {
                      const radius = Math.sqrt(Math.pow(s.p1.x - s.p2.x, 2) + Math.pow(s.p1.y - s.p2.y, 2));
                      const cmSize = 5; 
-                     svgContent += `<line x1="${s.p1.x - cmSize}" y1="${s.p1.y}" x2="${s.p1.x + cmSize}" y2="${s.p1.y}" stroke="${color}" stroke-width="${strokeWidth}" />`;
-                     svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y - cmSize}" x2="${s.p1.x}" y2="${s.p1.y + cmSize}" stroke="${color}" stroke-width="${strokeWidth}" />`;
+                     svgContent += `<line x1="${s.p1.x - cmSize}" y1="${s.p1.y}" x2="${s.p1.x + cmSize}" y2="${s.p1.y}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
+                     svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y - cmSize}" x2="${s.p1.x}" y2="${s.p1.y + cmSize}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
                      if (s.subType === 'diameter') {
                          const diameter = radius * 2;
                          const displayValue = (diameter / factor).toFixed(2);
                          const text = s.textOverride || `Ø ${displayValue}`;
                          const vecX = s.p1.x - s.p2.x;
                          const vecY = s.p1.y - s.p2.y;
-                         svgContent += `<line x1="${s.p2.x}" y1="${s.p2.y}" x2="${s.p1.x + vecX}" y2="${s.p1.y + vecY}" stroke="${color}" stroke-width="${strokeWidth}" marker-start="url(#arrow)" marker-end="url(#arrow)" />`;
+                         svgContent += `<line x1="${s.p2.x}" y1="${s.p2.y}" x2="${s.p1.x + vecX}" y2="${s.p1.y + vecY}" stroke="${color}" stroke-width="${strokeWidth}" marker-start="url(#arrow)" marker-end="url(#arrow)" ${dashArray} />`;
                          svgContent += `<text x="${s.offsetPoint.x}" y="${s.offsetPoint.y}" fill="${color}" font-size="${s.fontSize || 4}" font-family="sans-serif" text-anchor="middle" dominant-baseline="middle">${escapeXml(text)}</text>`;
                      } else {
                          const displayValue = (radius / factor).toFixed(2);
                          const text = s.textOverride || `R ${displayValue}`;
-                         svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" marker-end="url(#arrow)" />`;
+                         svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" marker-end="url(#arrow)" ${dashArray} />`;
                          if (Math.sqrt(Math.pow(s.p2.x - s.offsetPoint.x, 2) + Math.pow(s.p2.y - s.offsetPoint.y, 2)) > 1) {
-                             svgContent += `<line x1="${s.p2.x}" y1="${s.p2.y}" x2="${s.offsetPoint.x}" y2="${s.offsetPoint.y}" stroke="${color}" stroke-width="${strokeWidth}" />`;
+                             svgContent += `<line x1="${s.p2.x}" y1="${s.p2.y}" x2="${s.offsetPoint.x}" y2="${s.offsetPoint.y}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
                          }
                          svgContent += `<text x="${s.offsetPoint.x}" y="${s.offsetPoint.y}" fill="${color}" font-size="${s.fontSize || 4}" font-family="sans-serif" text-anchor="middle" dominant-baseline="middle">${escapeXml(text)}</text>`;
                      }
                  } else {
-                     svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" />`;
+                     svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
                      const midX = (s.p1.x + s.p2.x) / 2; const midY = (s.p1.y + s.p2.y) / 2;
                      const dist = Math.sqrt(Math.pow(s.p1.x - s.p2.x, 2) + Math.pow(s.p1.y - s.p2.y, 2));
                      const displayValue = (dist / factor).toFixed(2);

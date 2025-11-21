@@ -5,11 +5,15 @@ export interface Point {
   y: number;
 }
 
+// Line Types
+export type LineType = 'solid' | 'dashed' | 'dotted' | 'dash-dot';
+
 // Drawing properties that can be applied to any shape
 export interface DrawingProperties {
   color: string;
   fill: string;
   strokeWidth: number;
+  lineType: LineType;
 }
 
 // Base interface for all shapes
@@ -82,7 +86,7 @@ export interface SymbolShape extends ShapeBase {
   type: 'symbol';
   x: number;
   y: number;
-  name: 'arrow' | 'warning' | 'extinguisher' | 'emergency_exit' | 'first_aid' | 'restroom' | 'trailer' | 'hydrant' | 'forklift' | 'pallet' | 'rack' | 'conveyor' | 'container';
+  name: 'door' | 'window' | 'arrow' | 'warning' | 'extinguisher' | 'emergency_exit' | 'first_aid' | 'restroom' | 'trailer' | 'hydrant' | 'forklift' | 'pallet' | 'rack' | 'conveyor' | 'container';
   size: number;
   rotation: number;
 }
@@ -110,14 +114,14 @@ export type AnyShapePropertyUpdates = {
     extensionLineOvershoot?: number;
     content?: string;
     properties?: Partial<DrawingProperties>;
-    name?: 'arrow' | 'warning' | 'extinguisher' | 'emergency_exit' | 'first_aid' | 'restroom' | 'trailer' | 'hydrant' | 'forklift' | 'pallet' | 'rack' | 'conveyor' | 'container';
+    name?: 'door' | 'window' | 'arrow' | 'warning' | 'extinguisher' | 'emergency_exit' | 'first_aid' | 'restroom' | 'trailer' | 'hydrant' | 'forklift' | 'pallet' | 'rack' | 'conveyor' | 'container';
     size?: number;
     rotation?: number;
     subType?: 'linear' | 'radial' | 'diameter';
 };
 
 // Tool definitions
-export type Tool = 'select' | 'pan' | 'line' | 'rectangle' | 'circle' | 'dimension' | 'copy-area' | 'paste' | 'trim' | 'extend' | 'rotate' | 'text' | 'move' | 'arrow_symbol' | 'warning_symbol' | 'icon' | 'icon_extinguisher' | 'icon_emergency_exit' | 'icon_first_aid' | 'icon_restroom' | 'icon_trailer' | 'icon_hydrant' | 'icon_forklift' | 'icon_pallet' | 'icon_rack' | 'icon_conveyor' | 'icon_container';
+export type Tool = 'select' | 'pan' | 'line' | 'rectangle' | 'circle' | 'arc' | 'dimension' | 'copy-area' | 'paste' | 'trim' | 'extend' | 'rotate' | 'text' | 'move' | 'arrow_symbol' | 'warning_symbol' | 'icon' | 'icon_door' | 'icon_window' | 'icon_extinguisher' | 'icon_emergency_exit' | 'icon_first_aid' | 'icon_restroom' | 'icon_trailer' | 'icon_hydrant' | 'icon_forklift' | 'icon_pallet' | 'icon_rack' | 'icon_conveyor' | 'icon_container';
 
 // Snap mode definitions
 export type SnapMode = 'grid' | 'endpoints' | 'midpoints' | 'centers' | 'inference';

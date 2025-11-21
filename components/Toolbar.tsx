@@ -1,4 +1,8 @@
 
+
+
+
+
 import React, { useMemo, useState } from 'react';
 import { useAppContext } from '../hooks/useAppContext';
 import { Tool } from '../types';
@@ -6,7 +10,8 @@ import {
     MousePointerIcon, LineIcon, RectangleIcon, CircleIcon, UndoIcon, RedoIcon, 
     DimensionIcon, HandIcon, CopyIcon, PasteIcon, CutIcon, TextIcon, MoveIcon, 
     StarIcon, ExtinguisherIcon, EmergencyExitIcon, FirstAidIcon, RestroomIcon,
-    TrailerIcon, HydrantIcon, ExtendIcon, RotateCwIcon, ForkliftIcon, PalletIcon, RackIcon, ConveyorIcon, ContainerIcon
+    TrailerIcon, HydrantIcon, ExtendIcon, RotateCwIcon, ForkliftIcon, PalletIcon, RackIcon, ConveyorIcon, ContainerIcon,
+    DoorIcon, WindowIcon, ArcIcon
 } from './Icon';
 
 interface ToolButtonProps {
@@ -88,6 +93,7 @@ const Toolbar: React.FC = () => {
             <ToolButton label="Línea" tool="line" icon={<LineIcon className="w-6 h-6" />} />
             <ToolButton label="Rectángulo" tool="rectangle" icon={<RectangleIcon className="w-6 h-6" />} />
             <ToolButton label="Círculo" tool="circle" icon={<CircleIcon className="w-6 h-6" />} />
+            <ToolButton label="Arco" tool="arc" icon={<ArcIcon className="w-6 h-6" />} />
             
             <ToolButton label="Texto" tool="text" icon={<TextIcon className="w-6 h-6" />} />
             
@@ -111,7 +117,7 @@ const Toolbar: React.FC = () => {
                         <div className="fixed left-28 top-1/2 -translate-y-1/2 p-4 bg-base-100 dark:bg-dark-base-100 border border-base-300 dark:border-dark-base-300 rounded-xl shadow-2xl grid grid-cols-2 gap-3 w-72 z-50 animate-in fade-in zoom-in duration-200 max-h-[80vh] overflow-y-auto">
                              
                              {/* Section: Logistics */}
-                             <div className="col-span-2 text-xs font-bold uppercase tracking-wider text-base-content/50 dark:text-white/70 mb-1">Almacén y Logística</div>
+                             <div className="col-span-2 text-xs font-bold uppercase tracking-wider text-base-content/50 dark:text-white/70 mb-1 mt-2">Almacén y Logística</div>
 
                              <button onClick={() => handleIconToolSelect('icon_forklift')} className="flex flex-col items-center p-3 hover:bg-base-200 dark:hover:bg-dark-base-200 rounded-lg border border-transparent hover:border-base-300 dark:hover:border-dark-base-300 transition-all">
                                  <div className="text-yellow-500 mb-2">

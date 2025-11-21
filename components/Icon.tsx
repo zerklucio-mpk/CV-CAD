@@ -1,6 +1,8 @@
 
 
 
+
+
 // This file contains all the SVG icon components used throughout the application.
 
 import React from 'react';
@@ -43,6 +45,15 @@ export const CircleIcon: React.FC<IconProps> = (props) => (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
         <circle cx="12" cy="12" r="10" />
         <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
+    </svg>
+);
+
+export const ArcIcon: React.FC<IconProps> = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+        <circle cx="3" cy="8" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="12" cy="3" r="1.5" fill="currentColor" stroke="none" />
+        <circle cx="21" cy="12" r="1.5" fill="currentColor" stroke="none" />
     </svg>
 );
 
@@ -152,6 +163,25 @@ export const StarIcon: React.FC<IconProps> = (props) => (
         <rect x="14" y="3" width="7" height="7" rx="1" />
         <rect x="14" y="14" width="7" height="7" rx="1" />
         <circle cx="6.5" cy="17.5" r="3.5" />
+    </svg>
+);
+
+// --- ARCHITECTURE ICONS ---
+
+export const DoorIcon: React.FC<IconProps> = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M3 21V3" />
+        <path d="M3 3h14v18" />
+        <path d="M17 21H3" />
+        <path d="M3 21c9.941 0 18-8.059 18-18" strokeDasharray="2 2"/>
+    </svg>
+);
+
+export const WindowIcon: React.FC<IconProps> = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <rect x="3" y="6" width="18" height="12" strokeWidth="2" />
+        <line x1="3" y1="12" x2="21" y2="12" strokeWidth="1.5" />
+        <line x1="12" y1="6" x2="12" y2="18" strokeWidth="1.5" />
     </svg>
 );
 

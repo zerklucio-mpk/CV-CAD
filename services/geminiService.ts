@@ -1,4 +1,8 @@
 
+
+
+
+
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { AnyShape } from "../types";
 
@@ -41,14 +45,16 @@ const shapeSchema: Schema = {
         cx: { type: Type.NUMBER, description: 'Center X for circle.' },
         cy: { type: Type.NUMBER, description: 'Center Y for circle.' },
         r: { type: Type.NUMBER, description: 'Radius for circle.' },
+        startAngle: { type: Type.NUMBER, description: 'Start angle for arcs (degrees).' },
+        endAngle: { type: Type.NUMBER, description: 'End angle for arcs (degrees).' },
         // Properties for Text
         content: { type: Type.STRING, description: 'Content for text shape.' },
         fontSize: { type: Type.NUMBER, description: 'Font size for text.' },
         // Properties for Symbol
         name: {
             type: Type.STRING,
-            enum: ['arrow', 'warning', 'extinguisher', 'emergency_exit', 'first_aid', 'restroom', 'trailer', 'hydrant', 'forklift', 'pallet', 'rack', 'conveyor', 'container'],
-            description: 'Name of the symbol icon.'
+            enum: ['door', 'window', 'arrow', 'warning', 'extinguisher', 'emergency_exit', 'first_aid', 'restroom', 'trailer', 'hydrant', 'forklift', 'pallet', 'rack', 'conveyor', 'container'],
+            description: 'Name of the symbol icon. Use door/window for architecture.'
         },
         size: { type: Type.NUMBER, description: 'Size of the symbol.' },
         rotation: { type: Type.NUMBER, description: 'Rotation in degrees.' },
@@ -58,7 +64,12 @@ const shapeSchema: Schema = {
             properties: {
                 color: { type: Type.STRING, description: 'Stroke color (hex code).' },
                 fill: { type: Type.STRING, description: 'Fill color (hex code or transparent).' },
-                strokeWidth: { type: Type.NUMBER, description: 'Stroke width in pixels.' }
+                strokeWidth: { type: Type.NUMBER, description: 'Stroke width in pixels.' },
+                lineType: { 
+                    type: Type.STRING, 
+                    enum: ['solid', 'dashed', 'dotted', 'dash-dot'],
+                    description: 'Line style (solid, dashed, dotted, dash-dot)'
+                }
             }
         }
     },
@@ -88,8 +99,10 @@ export const generateCadData = async (prompt: string): Promise<any[]> => {
                 - Analyze the user's request.
                 - Generate a list of geometric shapes (lines, rectangles, circles, text, symbols) to fulfill the request.
                 - For walls, use rectangles with thin width or double lines.
-                - For doors, represent them as simple rectangles or openings.
+                - For doors and windows, use the 'symbol' type with name 'door' or 'window'.
+                - For arcs, use 'circle' type and specify startAngle and endAngle.
                 - For logistics, use symbols like 'forklift', 'pallet', 'rack', 'conveyor'.
+                - If the user requests dashed or dotted lines (e.g. for projections, hidden lines), use the lineType property.
                 - Default stroke color: #FFFFFF.
                 - Default stroke width: 1 or 2.
                 - If not specified, assume a central starting position around (0,0) or (2000, 2000).

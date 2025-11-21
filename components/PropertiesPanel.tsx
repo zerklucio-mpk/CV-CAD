@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAppContext } from '../hooks/useAppContext';
-import { AnyShape, Circle, Line, Rectangle, DrawingProperties, AnyShapePropertyUpdates, Point, Dimension, Unit, Text, SymbolShape } from '../types';
+import { AnyShape, Circle, Line, Rectangle, DrawingProperties, AnyShapePropertyUpdates, Point, Dimension, Unit, Text, SymbolShape, LineType } from '../types';
 import { TrashIcon } from './Icon';
 
 const getUnitConversion = (unit: Unit) => {
@@ -306,6 +306,19 @@ const PropertiesPanel: React.FC = () => {
                     <ColorInput label="Relleno" value={currentProps.fill} onChange={v => handleDrawingPropertyChange({ fill: v })} />
                     <div className="px-4 py-2 space-y-2">
                         <NumberInput label={`Grosor Trazo (mm)`} value={currentProps.strokeWidth} onChange={v => handleDrawingPropertyChange({ strokeWidth: v })} step={0.1} min={0.1}/>
+                    </div>
+                     <div className="px-4 py-2 space-y-2">
+                        <label className="text-sm text-dark-base-content/80">Tipo de Línea</label>
+                        <select
+                            value={currentProps.lineType || 'solid'}
+                            onChange={(e) => handleDrawingPropertyChange({ lineType: e.target.value as LineType })}
+                            className="w-full bg-dark-base-200 text-dark-base-content p-2 rounded-md text-sm border border-transparent focus:border-primary focus:outline-none"
+                        >
+                            <option value="solid">Sólida</option>
+                            <option value="dashed">Discontinua ( - - - )</option>
+                            <option value="dotted">Punteada ( · · · )</option>
+                            <option value="dash-dot">Trazo y Punto ( - · - )</option>
+                        </select>
                     </div>
                 </div>
                  {selectedShape && (
