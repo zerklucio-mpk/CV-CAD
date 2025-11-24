@@ -5,7 +5,6 @@ import Header from './components/Header';
 import Toolbar from './components/Toolbar';
 import PropertiesPanel from './components/PropertiesPanel';
 import Canvas from './components/Canvas';
-import AIAssistant from './components/AIAssistant';
 
 const AppContent: React.FC = () => {
     return (
@@ -20,7 +19,6 @@ const AppContent: React.FC = () => {
                     <PropertiesPanel />
                 </aside>
             </div>
-            <AIAssistant />
         </div>
     );
 };
