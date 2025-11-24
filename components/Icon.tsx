@@ -1,8 +1,4 @@
 
-
-
-
-
 // This file contains all the SVG icon components used throughout the application.
 
 import React from 'react';
@@ -163,6 +159,14 @@ export const StarIcon: React.FC<IconProps> = (props) => (
         <rect x="14" y="3" width="7" height="7" rx="1" />
         <rect x="14" y="14" width="7" height="7" rx="1" />
         <circle cx="6.5" cy="17.5" r="3.5" />
+    </svg>
+);
+
+export const LayoutIcon: React.FC<IconProps> = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <rect x="3" y="3" width="18" height="18" rx="2" strokeWidth="2" />
+        <line x1="3" y1="16" x2="21" y2="16" />
+        <line x1="14" y1="16" x2="14" y2="21" />
     </svg>
 );
 

@@ -3,6 +3,7 @@ import React, { useState, useRef } from 'react';
 import { useAppContext } from '../hooks/useAppContext';
 import { SnapMode, Unit, LineType } from '../types';
 import { CheckIcon, SaveIcon, FilePlusIcon, FolderOpenIcon, DownloadIcon, XIcon, ImageIcon, EyeIcon, EyeOffIcon, SettingsIcon, TrashIcon } from './Icon';
+import { jsPDF } from "jspdf";
 
 const SnapToggle: React.FC<{ label: string, mode: SnapMode }> = ({ label, mode }) => {
     const { snapModes, toggleSnapMode } = useAppContext();
@@ -21,8 +22,9 @@ const SnapToggle: React.FC<{ label: string, mode: SnapMode }> = ({ label, mode }
 };
 
 // Helper to escape XML characters for SVG text
-const escapeXml = (unsafe: string) => {
-    return unsafe.replace(/[<>&'"]/g, function (c) {
+const escapeXml = (unsafe: string | null | undefined) => {
+    if (unsafe == null) return '';
+    return String(unsafe).replace(/[<>&'"]/g, function (c) {
         switch (c) {
             case '<': return '&lt;';
             case '>': return '&gt;';
@@ -43,6 +45,30 @@ const getStrokeDashArray = (lineType: LineType | undefined): string => {
         default: return '';
     }
 };
+
+// --- Arc Export Helpers ---
+const polarToCartesian = (centerX: number, centerY: number, radius: number, angleInDegrees: number) => {
+  const angleInRadians = (angleInDegrees) * Math.PI / 180.0;
+  return {
+    x: centerX + (radius * Math.cos(angleInRadians)),
+    y: centerY - (radius * Math.sin(angleInRadians))
+  };
+}
+
+const describeArc = (x: number, y: number, radius: number, startAngle: number, endAngle: number) => {
+    const startPt = polarToCartesian(x, y, radius, startAngle);
+    const endPt = polarToCartesian(x, y, radius, endAngle);
+
+    let angleDiff = endAngle - startAngle;
+    if (angleDiff < 0) angleDiff += 360;
+    
+    const largeArcFlag = angleDiff <= 180 ? "0" : "1";
+    
+    return [
+        "M", startPt.x, startPt.y, 
+        "A", radius, radius, 0, largeArcFlag, 0, endPt.x, endPt.y
+    ].join(" ");
+}
 
 const Header: React.FC = () => {
     const { unit, setUnit, isOrthoMode, setIsOrthoMode, shapes, replaceShapes, createNewDrawing, viewTransform, setViewTransform, templateImage, setTemplateImage, updateTemplateImage } = useAppContext();
@@ -65,27 +91,13 @@ const Header: React.FC = () => {
         scope: 'extents' | 'viewport',
         theme: 'dark' | 'light',
         optimizeLines: boolean,
-        paperSize: 'A4' | 'Letter' | 'Legal',
-        includeTitleBlock: boolean
+        paperSize: 'A4' | 'Letter' | 'Legal'
     }>({
         format: 'png',
         scope: 'extents',
         theme: 'light', // Default to light for printable exports usually
         optimizeLines: true,
-        paperSize: 'A4',
-        includeTitleBlock: false // Changed to false by default
-    });
-
-    // Title Block Data State - Professional Standard
-    const [titleBlockData, setTitleBlockData] = useState({
-        companyName: 'NOMBRE DE LA EMPRESA', // Organization
-        projectName: 'PROYECTO EJECUTIVO',
-        drawingTitle: 'PLANTA ARQUITECTÓNICA',
-        drawnBy: 'I.R.I LUCIO CERVANTES JUAN ALBERTO', // Default long name for testing
-        checkedBy: 'ING. REVISOR DEL PROYECTO', // REVISO
-        scale: 'INDICADA', // ESCALA
-        sheetNumber: 'A-101', // CLAVE / PLANO
-        revision: '00' // REV
+        paperSize: 'A4'
     });
 
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -139,14 +151,23 @@ const Header: React.FC = () => {
         const a = document.createElement('a');
         a.href = url;
         a.download = fileName;
+        document.body.appendChild(a); // Append to body for FF support
         a.click();
+        document.body.removeChild(a); // Cleanup
         URL.revokeObjectURL(url);
     };
 
     // Quick Save (Overwrite logic / Download current)
     const handleSave = () => {
         const data = JSON.stringify(shapes, null, 2);
-        downloadFile(currentFileName, data, 'application/json');
+        // Ensure extension exists
+        const fileName = currentFileName.endsWith('.json') ? currentFileName : `${currentFileName}.json`;
+        downloadFile(fileName, data, 'application/json');
+        
+        // Sync state if extension was added
+        if (fileName !== currentFileName) {
+            setCurrentFileName(fileName);
+        }
         setIsFileMenuOpen(false);
     };
 
@@ -233,11 +254,10 @@ const Header: React.FC = () => {
             setIsFileMenuOpen(false);
             return;
         }
-        // Standard defaults - Title Block disabled for safety/simplicity unless requested
+        // Standard defaults
         setExportConfig(prev => ({ 
             ...prev, 
             theme: 'light',
-            includeTitleBlock: false, 
             optimizeLines: true
         }));
         setShowExportModal(true);
@@ -249,44 +269,69 @@ const Header: React.FC = () => {
 
         // 1. Determine Drawing Extents (Geometric Content)
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        let hasShapes = false;
         
-        const visibleShapes = config.scope === 'viewport' 
-            ? shapes // Simplification: For export, we usually grab everything or we need complex clipping.
-            : shapes;
+        // Always export all shapes for PDF/TitleBlock to avoid cutting off parts of the drawing
+        const visibleShapes = shapes;
 
-        shapes.forEach(s => {
+        visibleShapes.forEach(s => {
+            hasShapes = true;
+            // Include estimated stroke width to avoid clipping thick lines
+            const stroke = s.properties.strokeWidth || 1;
+            const halfStroke = stroke / 2;
+
             if (s.type === 'line' || s.type === 'dimension') {
-                minX = Math.min(minX, s.p1.x, s.p2.x); maxX = Math.max(maxX, s.p1.x, s.p2.x);
-                minY = Math.min(minY, s.p1.y, s.p2.y); maxY = Math.max(maxY, s.p1.y, s.p2.y);
-            } else if (s.type === 'rectangle') {
-                minX = Math.min(minX, s.x); maxX = Math.max(maxX, s.x + s.width);
-                minY = Math.min(minY, s.y); maxY = Math.max(maxY, s.y + s.height);
+                const minSx = Math.min(s.p1.x, s.p2.x) - halfStroke;
+                const maxSx = Math.max(s.p1.x, s.p2.x) + halfStroke;
+                const minSy = Math.min(s.p1.y, s.p2.y) - halfStroke;
+                const maxSy = Math.max(s.p1.y, s.p2.y) + halfStroke;
+
+                if(Number.isFinite(minSx)) { minX = Math.min(minX, minSx); maxX = Math.max(maxX, maxSx); }
+                if(Number.isFinite(minSy)) { minY = Math.min(minY, minSy); maxY = Math.max(maxY, maxSy); }
+                
+                if (s.type === 'dimension' && s.offsetPoint) {
+                     minX = Math.min(minX, s.offsetPoint.x - 20); maxX = Math.max(maxX, s.offsetPoint.x + 20);
+                     minY = Math.min(minY, s.offsetPoint.y - 10); maxY = Math.max(maxY, s.offsetPoint.y + 10);
+                }
+
+            } else if (s.type === 'rectangle' || s.type === 'title_block') {
+                let rx = s.x, ry = s.y, rw = s.width, rh = s.height;
+                // Handle negative width/height normalization
+                if (rw < 0) { rx += rw; rw = Math.abs(rw); }
+                if (rh < 0) { ry += rh; rh = Math.abs(rh); }
+                
+                if(Number.isFinite(rx) && Number.isFinite(rw)) { minX = Math.min(minX, rx - halfStroke); maxX = Math.max(maxX, rx + rw + halfStroke); }
+                if(Number.isFinite(ry) && Number.isFinite(rh)) { minY = Math.min(minY, ry - halfStroke); maxY = Math.max(maxY, ry + rh + halfStroke); }
+
             } else if (s.type === 'circle') {
-                minX = Math.min(minX, s.cx - s.r); maxX = Math.max(maxX, s.cx + s.r);
-                minY = Math.min(minY, s.cy - s.r); maxY = Math.max(maxY, s.cy + s.r);
-            } else if (s.type === 'text' || s.type === 'symbol') {
-                minX = Math.min(minX, s.x); maxX = Math.max(maxX, s.x + (s.type === 'symbol' ? s.size : 100)); 
-                minY = Math.min(minY, s.y); maxY = Math.max(maxY, s.y + (s.type === 'symbol' ? s.size : 12));
+                if(Number.isFinite(s.cx) && Number.isFinite(s.r)) { 
+                    minX = Math.min(minX, s.cx - s.r - halfStroke); maxX = Math.max(maxX, s.cx + s.r + halfStroke);
+                    minY = Math.min(minY, s.cy - s.r - halfStroke); maxY = Math.max(maxY, s.cy + s.r + halfStroke);
+                }
+            } else if (s.type === 'text') {
+                 const widthEst = (s.content.length * s.fontSize * 0.6);
+                 minX = Math.min(minX, s.x); maxX = Math.max(maxX, s.x + widthEst); 
+                 minY = Math.min(minY, s.y); maxY = Math.max(maxY, s.y + s.fontSize);
+            } else if (s.type === 'symbol') {
+                const halfSize = s.size / 2;
+                minX = Math.min(minX, s.x - halfSize); maxX = Math.max(maxX, s.x + halfSize);
+                minY = Math.min(minY, s.y - halfSize); maxY = Math.max(maxY, s.y + halfSize);
             }
         });
 
-        // Add some padding to extents
-        const extPadding = 10;
-        minX -= extPadding; minY -= extPadding; maxX += extPadding; maxY += extPadding;
+        if (!hasShapes || !Number.isFinite(minX) || !Number.isFinite(maxX)) return null;
 
         const contentW = maxX - minX;
         const contentH = maxY - minY;
 
         // --- PAPER SPACE LOGIC ---
         let finalSVGWidth, finalSVGHeight, viewBoxStr, contentTransform = '';
-        let titleBlockSvg = '';
+        let fitScale = 1;
 
-        // Generate a unique ID suffix for this export to prevent clip-path conflicts in blob rendering
-        const runId = Math.random().toString(36).substr(2, 6);
-
-        if (config.includeTitleBlock) {
-            // Define Paper Dimensions (approx 1mm = 10 units for high res calculation)
-            const P_SCALE = 10; 
+        if (config.format === 'pdf') {
+            // Define Paper Dimensions
+            // Using a high pixel density scale (approx 4 pixels per mm for calculation)
+            const P_SCALE = 5; 
             const papers = {
                 'A4': { w: 297 * P_SCALE, h: 210 * P_SCALE }, // Landscape
                 'Letter': { w: 279 * P_SCALE, h: 216 * P_SCALE },
@@ -298,174 +343,35 @@ const Header: React.FC = () => {
             finalSVGHeight = paper.h;
             viewBoxStr = `0 0 ${paper.w} ${paper.h}`;
 
-            // Layout Constants (mm * P_SCALE)
+            // --- LAYOUT ---
             const margin = 10 * P_SCALE; 
-            const blockHeight = 32 * P_SCALE; // Increased slightly for better fit
             
-            // Calculate Drawing Area (ViewPort on Paper)
-            const drawAreaW = paper.w - (margin * 2);
-            const drawAreaH = paper.h - (margin * 2) - blockHeight; // Space above title block
-            const drawAreaX = margin;
-            const drawAreaY = margin;
+            // Viewport Area for Drawing
+            const viewPortX = margin;
+            const viewPortY = margin;
+            const viewPortW = paper.w - (margin * 2);
+            const viewPortH = paper.h - (margin * 2);
 
-            // Calculate Fit Scale
-            const scaleX = drawAreaW / contentW;
-            const scaleY = drawAreaH / contentH;
-            const fitScale = Math.min(scaleX, scaleY) * 0.95; // 5% padding
+            // Calculate Fit Scale to contain the drawing within the viewport
+            const scaleX = viewPortW / contentW;
+            const scaleY = viewPortH / contentH;
+            fitScale = Math.min(scaleX, scaleY) * 0.95; // 5% padding inside viewport
 
-            // Center content
+            // Center the drawing in the Viewport
             const scaledContentW = contentW * fitScale;
             const scaledContentH = contentH * fitScale;
-            const transX = drawAreaX + (drawAreaW - scaledContentW) / 2 - (minX * fitScale);
-            const transY = drawAreaY + (drawAreaH - scaledContentH) / 2 - (minY * fitScale);
-
-            contentTransform = `translate(${transX} ${transY}) scale(${fitScale})`;
-
-            // --- PROFESSIONAL TITLE BLOCK SVG (ISO Style / Optimized) ---
-            const strokeColor = '#000000';
-            const lineStyle = `stroke="${strokeColor}" stroke-width="${2}" fill="none"`;
-            const thinLineStyle = `stroke="${strokeColor}" stroke-width="${1}" fill="none"`;
-            const textBase = `fill="${strokeColor}" font-family="sans-serif"`;
             
-            // Helper for Labels (Small, Sans-serif)
-            const label = (x: number, y: number, text: string) => 
-                `<text x="${x}" y="${y}" ${textBase} font-size="${1.6 * P_SCALE}" opacity="0.7" font-weight="normal">${escapeXml(text)}</text>`;
-            
-            // Helper for Values (Bold) - Updated to accept extra attributes like clip-path
-            // Important: escapeXml() is called on the content to prevent SVG breaking
-            const val = (x: number, y: number, text: string, size: number = 2.5, anchor: string = "start", weight: string = "bold", extraAttrs: string = "") => 
-                `<text x="${x}" y="${y}" ${textBase} font-size="${size * P_SCALE}" font-weight="${weight}" text-anchor="${anchor}" ${extraAttrs}>${text ? escapeXml(text.toUpperCase()) : ''}</text>`;
+            // Translate Logic:
+            // 1. Shift drawing so minX,minY is at 0,0 (-minX, -minY)
+            // 2. Scale it
+            // 3. Move to center of viewport
+            const offsetX = viewPortX + (viewPortW - scaledContentW) / 2;
+            const offsetY = viewPortY + (viewPortH - scaledContentH) / 2;
 
-            const dateStr = new Date().toLocaleDateString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit' });
-
-            // Coordinates relative to bottom margin
-            const bx = margin; // Block X start
-            const by = paper.h - margin - blockHeight; // Block Y start
-            const bw = paper.w - margin * 2; // Block Width
-
-            // --- Column Distribution (Optimized for Long Names) ---
-            // Col 1: Project Data & Company (40%)
-            // Col 2: Signatures / Names (35%) - WIDER NOW
-            // Col 3: Technical Data (25%)
-            
-            const col1W = bw * 0.40; 
-            const col2W = bw * 0.35; 
-            const col3W = bw * 0.25; 
-            
-            const x1 = bx;
-            const x2 = bx + col1W;
-            const x3 = bx + col1W + col2W;
-            const xEnd = bx + bw;
-
-            // Horizontal split for Col 1
-            const c1Row1H = blockHeight * 0.35; // Top (Company)
-            const c1Row2H = blockHeight * 0.35; // Middle (Project)
-            
-            // Horizontal split for Col 2 (Names)
-            const c2MidH = blockHeight * 0.5; // Split equally for Drawn/Checked
-
-            // Horizontal split for Col 3 (Tech)
-            const c3Row1H = blockHeight * 0.4; // Date/Scale
-            const c3Row2H = blockHeight * 0.6; // Sheet No
-
-            // Define Clip Paths to enforce boundaries - USING UNIQUE IDs for PNG compatibility
-            const clips = `
-                <defs>
-                    <clipPath id="clip-company-${runId}"><rect x="${x1}" y="${by}" width="${col1W}" height="${c1Row1H}" /></clipPath>
-                    <clipPath id="clip-project-${runId}"><rect x="${x1}" y="${by + c1Row1H}" width="${col1W}" height="${c1Row2H}" /></clipPath>
-                    <clipPath id="clip-title-${runId}"><rect x="${x1}" y="${by + c1Row1H + c1Row2H}" width="${col1W}" height="${blockHeight - c1Row1H - c1Row2H}" /></clipPath>
-                    
-                    <clipPath id="clip-drawn-${runId}"><rect x="${x2}" y="${by}" width="${col2W}" height="${c2MidH}" /></clipPath>
-                    <clipPath id="clip-checked-${runId}"><rect x="${x2}" y="${by + c2MidH}" width="${col2W}" height="${blockHeight - c2MidH}" /></clipPath>
-                    
-                    <clipPath id="clip-date-${runId}"><rect x="${x3}" y="${by}" width="${col3W/2}" height="${c3Row1H}" /></clipPath>
-                    <clipPath id="clip-scale-${runId}"><rect x="${x3 + col3W/2}" y="${by}" width="${col3W/2}" height="${c3Row1H}" /></clipPath>
-                </defs>
-            `;
-
-            titleBlockSvg = `
-                <g id="title-block">
-                    ${clips}
-                    <!-- Outer Border of Paper Area -->
-                    <rect x="${margin}" y="${margin}" width="${bw}" height="${paper.h - margin*2}" ${lineStyle} stroke-width="3" />
-                    
-                    <!-- Main Block Rect -->
-                    <line x1="${bx}" y1="${by}" x2="${xEnd}" y2="${by}" ${lineStyle} />
-                    
-                    <!-- Vertical Dividers -->
-                    <line x1="${x2}" y1="${by}" x2="${x2}" y2="${by + blockHeight}" ${lineStyle} />
-                    <line x1="${x3}" y1="${by}" x2="${x3}" y2="${by + blockHeight}" ${lineStyle} />
-
-                    <!-- =======================
-                         COLUMN 1: INFO & PROJECT 
-                         ======================= -->
-                    <!-- H-Dividers -->
-                    <line x1="${x1}" y1="${by + c1Row1H}" x2="${x2}" y2="${by + c1Row1H}" ${thinLineStyle} />
-                    <line x1="${x1}" y1="${by + c1Row1H + c1Row2H}" x2="${x2}" y2="${by + c1Row1H + c1Row2H}" ${thinLineStyle} />
-
-                    <!-- Company Name (Top) -->
-                    ${label(x1 + 2*P_SCALE, by + 3.5*P_SCALE, "EMPRESA / ORGANIZACIÓN:")}
-                    ${val(x1 + 2*P_SCALE, by + 8.5*P_SCALE, titleBlockData.companyName, 3.0, "start", "bold", `clip-path="url(#clip-company-${runId})"`)}
-
-                    <!-- Project Name (Middle) -->
-                    ${label(x1 + 2*P_SCALE, by + c1Row1H + 3.5*P_SCALE, "PROYECTO:")}
-                    ${val(x1 + 2*P_SCALE, by + c1Row1H + 8.5*P_SCALE, titleBlockData.projectName, 3.0, "start", "bold", `clip-path="url(#clip-project-${runId})"`)}
-
-                    <!-- Drawing Title (Bottom) -->
-                    ${label(x1 + 2*P_SCALE, by + c1Row1H + c1Row2H + 3.5*P_SCALE, "CONTENIDO:")}
-                    ${val(x1 + 2*P_SCALE, by + blockHeight - 2.5*P_SCALE, titleBlockData.drawingTitle, 3.0, "start", "bold", `clip-path="url(#clip-title-${runId})"`)}
-
-                    <!-- =======================
-                         COLUMN 2: NAMES (WIDE)
-                         ======================= -->
-                    <!-- H-Divider -->
-                    <line x1="${x2}" y1="${by + c2MidH}" x2="${x3}" y2="${by + c2MidH}" ${thinLineStyle} />
-
-                    <!-- Drawn By -->
-                    ${label(x2 + 2*P_SCALE, by + 3.5*P_SCALE, "DIBUJÓ:")}
-                    ${val(x2 + 2*P_SCALE, by + 10*P_SCALE, titleBlockData.drawnBy, 2.8, "start", "bold", `clip-path="url(#clip-drawn-${runId})"`)} 
-
-                    <!-- Checked By -->
-                    ${label(x2 + 2*P_SCALE, by + c2MidH + 3.5*P_SCALE, "REVISÓ:")}
-                    ${val(x2 + 2*P_SCALE, by + blockHeight - 4*P_SCALE, titleBlockData.checkedBy, 2.8, "start", "bold", `clip-path="url(#clip-checked-${runId})"`)}
-
-                    <!-- =======================
-                         COLUMN 3: TECH DATA
-                         ======================= -->
-                    <!-- H-Divider -->
-                    <line x1="${x3}" y1="${by + c3Row1H}" x2="${xEnd}" y2="${by + c3Row1H}" ${thinLineStyle} />
-                    
-                    <!-- V-Divider for Top Row (Date | Scale) -->
-                    <line x1="${x3 + col3W/2}" y1="${by}" x2="${x3 + col3W/2}" y2="${by + c3Row1H}" ${thinLineStyle} />
-
-                    <!-- Date -->
-                    ${label(x3 + 2*P_SCALE, by + 3.5*P_SCALE, "FECHA:")}
-                    ${val(x3 + 2*P_SCALE, by + 9*P_SCALE, dateStr, 2.2, "start", "bold", `clip-path="url(#clip-date-${runId})"`)}
-
-                    <!-- Scale -->
-                    ${label(x3 + col3W/2 + 2*P_SCALE, by + 3.5*P_SCALE, "ESCALA:")}
-                    ${val(x3 + col3W/2 + 2*P_SCALE, by + 9*P_SCALE, titleBlockData.scale, 2.2, "start", "bold", `clip-path="url(#clip-scale-${runId})"`)}
-
-                    <!-- V-Divider for Bottom Row (Sheet | Rev) -->
-                    <line x1="${xEnd - (col3W * 0.3)}" y1="${by + c3Row1H}" x2="${xEnd - (col3W * 0.3)}" y2="${by + blockHeight}" ${thinLineStyle} />
-
-                    <!-- Sheet Number -->
-                    ${label(x3 + 2*P_SCALE, by + c3Row1H + 3.5*P_SCALE, "PLANO Nº:")}
-                    <text x="${x3 + (col3W * 0.35)}" y="${by + blockHeight - 6*P_SCALE}" ${textBase} font-size="${5 * P_SCALE}" font-weight="bold" text-anchor="middle">${escapeXml(titleBlockData.sheetNumber.toUpperCase())}</text>
-
-                    <!-- Revision -->
-                    ${label(xEnd - (col3W * 0.3) + 1.5*P_SCALE, by + c3Row1H + 3.5*P_SCALE, "REV:")}
-                    <text x="${xEnd - (col3W * 0.15)}" y="${by + blockHeight - 6*P_SCALE}" ${textBase} font-size="${4 * P_SCALE}" font-weight="bold" text-anchor="middle">${escapeXml(titleBlockData.revision)}</text>
-
-                    <!-- Logo (Bottom Right of Tech Data) - Placeholder or Custom SVG -->
-                    <g transform="translate(${xEnd - 18*P_SCALE}, ${by + blockHeight - 18*P_SCALE}) scale(${0.1*P_SCALE})">
-                        <!-- Example Mini Logo or blank space -->
-                    </g>
-                </g>
-            `;
+            contentTransform = `translate(${offsetX} ${offsetY}) scale(${fitScale}) translate(${-minX} ${-minY})`;
 
         } else {
-            // Raw Export (Original Logic)
+            // Raw Export (No Title Block / No PDF Layout)
             const padding = 50;
             const vbX = minX - padding;
             const vbY = minY - padding;
@@ -481,17 +387,14 @@ const Header: React.FC = () => {
         const bgColor = config.theme === 'dark' ? '#000000' : '#FFFFFF';
         const defaultStroke = config.theme === 'dark' ? '#FFFFFF' : '#000000';
 
-        // Smart Line Weight
-        const maxDimension = Math.max(finalSVGWidth, finalSVGHeight);
-        const minReadableStroke = config.optimizeLines ? maxDimension / 3000 : 0; 
-
         let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBoxStr}" width="${finalSVGWidth}" height="${finalSVGHeight}">`;
         
         // Background
-        if (config.includeTitleBlock) {
+        if (config.format === 'pdf') {
              svgContent += `<rect x="0" y="0" width="${finalSVGWidth}" height="${finalSVGHeight}" fill="${bgColor}" />`;
         } else {
-             svgContent += `<rect x="${viewBoxStr.split(' ')[0]}" y="${viewBoxStr.split(' ')[1]}" width="${finalSVGWidth}" height="${finalSVGHeight}" fill="${bgColor}" />`;
+             const vbParts = viewBoxStr.split(' ');
+             svgContent += `<rect x="${vbParts[0]}" y="${vbParts[1]}" width="${vbParts[2]}" height="${vbParts[3]}" fill="${bgColor}" />`;
         }
         
         svgContent += `
@@ -505,7 +408,7 @@ const Header: React.FC = () => {
         // Drawing Group
         svgContent += `<g transform="${contentTransform}">`;
 
-        shapes.forEach(s => {
+        visibleShapes.forEach(s => {
             let color = s.properties.color || '#ffffff';
             // Auto-invert black/white based on theme
             if (config.theme === 'light') {
@@ -515,7 +418,20 @@ const Header: React.FC = () => {
             }
 
             let strokeWidth = s.properties.strokeWidth || 1;
-            if (config.optimizeLines) strokeWidth = Math.max(strokeWidth, minReadableStroke);
+            
+            // Smart Stroke Compensation for PDF/Fit Scale
+            if (config.optimizeLines && (config.format === 'pdf')) {
+                 // The problem: if drawing is HUGE (e.g. 50000 units), fitScale is tiny (0.01).
+                 // 1px stroke * 0.01 = 0.01px (invisible).
+                 // We want minimum line width on PAPER to be ~0.5px or 1px.
+                 
+                 const minVisibleStrokeOnPaper = 1.0; // pixels on paper space
+                 const scaledStroke = strokeWidth * fitScale;
+                 
+                 if (scaledStroke < minVisibleStrokeOnPaper) {
+                      strokeWidth = minVisibleStrokeOnPaper / fitScale;
+                 }
+            }
 
             const fill = s.properties.fill !== 'transparent' ? s.properties.fill : 'none';
             const dashArray = getStrokeDashArray(s.properties.lineType);
@@ -525,19 +441,112 @@ const Header: React.FC = () => {
             } else if (s.type === 'rectangle') {
                 const transform = s.rotation ? `rotate(${-s.rotation}, ${s.x + s.width/2}, ${s.y + s.height/2})` : '';
                 svgContent += `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" stroke="${color}" stroke-width="${strokeWidth}" fill="${fill}" transform="${transform}" ${dashArray} />`;
+            } else if (s.type === 'title_block') {
+                 // Manual Title Block Rendering - Sync with Canvas.tsx Layout
+                 const { x, y, width, height, data } = s;
+                 
+                 // --- REVISED LAYOUT ---
+                 // Col 1: Logo/Company (25%)
+                 // Col 2: Project Info (45%) -> Contains Project (Top), DrawnBy (Middle), CheckedBy (Bottom)
+                 // Col 3: Tech Data (30%) -> Scale/Date (Top 50%), Sheet/Rev (Bottom 50%)
+                 
+                 const wCol1 = width * 0.25;
+                 const wCol2 = width * 0.45;
+                 const wCol3 = width * 0.30;
+                 const xCol1 = x;
+                 const xCol2 = x + wCol1;
+                 const xCol3 = x + wCol1 + wCol2;
+                 
+                 const hProject = height * 0.4;
+                 const hDrawn = height * 0.3;
+                 const hChecked = height * 0.3;
+                 
+                 const yCol2Row1 = y; // Project
+                 const yCol2Row2 = y + hProject; // Drawn By
+                 const yCol2Row3 = y + hProject + hDrawn; // Checked By
+
+                 const hCol3Row = height / 2;
+                 const yCol3Row1 = y;
+                 const yCol3Row2 = y + hCol3Row;
+
+                 // Typography settings
+                 const fontScale = s.fontScale || 1.0;
+                 const letterSpacing = s.letterSpacing || 0;
+                 const lineSpacingMult = s.lineSpacing || 1.0;
+
+                 const labelSize = Math.max(height * 0.08, 1.5) * fontScale;
+                 const valueSize = Math.max(height * 0.11, 2) * fontScale;
+                 const valueYRatio = 0.3 + (0.55 * lineSpacingMult);
+                 
+                 const textBase = `fill="${color}" font-family="sans-serif" letter-spacing="${letterSpacing}"`;
+                 const lineBase = `stroke="${color}" stroke-width="${strokeWidth}" fill="none"`;
+                 
+                 // Helper to match Canvas Cell Rendering
+                 const renderCell = (bx: number, by: number, bw: number, bh: number, label: string, value: string, isTitle: boolean = false) => {
+                     const lX = bx + (bw * 0.05);
+                     const lY = by + (bh * 0.3);
+                     const vX = bx + (bw * 0.05);
+                     const vY = by + (bh * valueYRatio);
+                     return `
+                        <text x="${lX}" y="${lY}" ${textBase} font-size="${labelSize}" font-weight="bold">${escapeXml(label)}</text>
+                        <text x="${vX}" y="${vY}" ${textBase} font-size="${isTitle ? valueSize * 1.2 : valueSize}" font-weight="${isTitle?"bold":"normal"}">${escapeXml(value)}</text>
+                     `;
+                 };
+
+                 svgContent += `
+                    <g>
+                        <rect x="${x}" y="${y}" width="${width}" height="${height}" ${lineBase} />
+                        <line x1="${xCol2}" y1="${y}" x2="${xCol2}" y2="${y+height}" ${lineBase} />
+                        <line x1="${xCol3}" y1="${y}" x2="${xCol3}" y2="${y+height}" ${lineBase} />
+                        
+                        ${/* Col 1: Company */ ""}
+                        <text x="${xCol1 + 5}" y="${y + 10}" ${textBase} font-size="${labelSize}" font-weight="bold">EMPRESA:</text>
+                        <text x="${xCol1 + (wCol1/2)}" y="${y + (height/2) + (valueSize/3)}" text-anchor="middle" ${textBase} font-size="${valueSize * 1.2}" font-weight="bold">${escapeXml(data.company)}</text>
+                        
+                        ${/* Col 2 Horizontal Lines */ ""}
+                        <line x1="${xCol2}" y1="${yCol2Row2}" x2="${xCol3}" y2="${yCol2Row2}" ${lineBase} />
+                        <line x1="${xCol2}" y1="${yCol2Row3}" x2="${xCol3}" y2="${yCol2Row3}" ${lineBase} />
+
+                        ${/* Col 2 Content */ ""}
+                        ${renderCell(xCol2, yCol2Row1, wCol2, hProject, "PROYECTO:", data.project, true)}
+                        ${renderCell(xCol2, yCol2Row2, wCol2, hDrawn, "REALIZÓ:", data.drawnBy)}
+                        ${renderCell(xCol2, yCol2Row3, wCol2, hChecked, "REVISÓ:", data.checkedBy)}
+
+                        ${/* Col 3 Grid Lines */ ""}
+                        <line x1="${xCol3 + (wCol3/2)}" y1="${y}" x2="${xCol3 + (wCol3/2)}" y2="${y+height}" ${lineBase} />
+                        <line x1="${xCol3}" y1="${yCol3Row2}" x2="${x+width}" y2="${yCol3Row2}" ${lineBase} />
+                        
+                        ${/* Col 3 Content */ ""}
+                        ${renderCell(xCol3, yCol3Row1, wCol3/2, hCol3Row, "ESCALA:", data.scale)}
+                        ${renderCell(xCol3 + wCol3/2, yCol3Row1, wCol3/2, hCol3Row, "FECHA:", data.date)}
+                        
+                        ${renderCell(xCol3, yCol3Row2, wCol3/2, hCol3Row, "PLANO:", data.sheet, true)}
+                        ${renderCell(xCol3 + wCol3/2, yCol3Row2, wCol3/2, hCol3Row, "REV:", data.revision)}
+                    </g>
+                 `;
             } else if (s.type === 'circle') {
-                svgContent += `<circle cx="${s.cx}" cy="${s.cy}" r="${s.r}" stroke="${color}" stroke-width="${strokeWidth}" fill="${fill}" ${dashArray} />`;
+                if (s.startAngle !== undefined && s.endAngle !== undefined && Math.abs(s.endAngle - s.startAngle) < 359.9) {
+                    const d = describeArc(s.cx, s.cy, s.r, s.startAngle, s.endAngle);
+                    svgContent += `<path d="${d}" stroke="${color}" stroke-width="${strokeWidth}" fill="none" ${dashArray} />`;
+                } else {
+                    svgContent += `<circle cx="${s.cx}" cy="${s.cy}" r="${s.r}" stroke="${color}" stroke-width="${strokeWidth}" fill="${fill}" ${dashArray} />`;
+                }
             } else if (s.type === 'text') {
+                 // Adjust text size if scaling is extreme? Usually text scales geometrically which is correct for CAD.
                  const transform = s.rotation ? `rotate(${-s.rotation}, ${s.x}, ${s.y})` : '';
-                 // Escape content for text shapes too
                  svgContent += `<text x="${s.x}" y="${s.y}" fill="${color}" font-size="${s.fontSize}" font-family="sans-serif" transform="${transform}">${escapeXml(s.content)}</text>`;
             } else if (s.type === 'symbol') {
-                // ... Symbol logic remains the same ...
                 const rotation = s.rotation || 0;
                 const size = s.size;
-                const symStroke = config.optimizeLines ? Math.max(1, minReadableStroke * (24/size)) : 1; 
+                // Symbols need stroke compensation too
+                let symStroke = strokeWidth; 
+                // Reset internal stroke to 1 before scaling, but keep proportion
                 const transform = `translate(${s.x}, ${s.y}) rotate(${-rotation}) scale(${size/24}) translate(-12, -12)`;
-                const getStrokeProps = () => `stroke="${color}" stroke-width="${symStroke * (24/size) * strokeWidth}" fill="none" stroke-linecap="round" stroke-linejoin="round" ${dashArray}`;
+                
+                // Scale inner strokes relative to symbol size
+                const innerStroke = Math.max(1, symStroke * (24/size));
+
+                const getStrokeProps = () => `stroke="${color}" stroke-width="${innerStroke}" fill="none" stroke-linecap="round" stroke-linejoin="round" ${dashArray}`;
                 
                 let innerPath = '';
                  switch (s.name) {
@@ -546,770 +555,373 @@ const Header: React.FC = () => {
                     case 'extinguisher': innerPath = `<rect x="2" y="2" width="20" height="20" rx="2" ${getStrokeProps()}/><path d="M12 6v-1" ${getStrokeProps()}/><path d="M9 10h6" ${getStrokeProps()}/><path d="M12 8a2 2 0 0 0-2 2v8a2 2 0 0 0 4 0v-8a2 2 0 0 0-2-2z" fill="${color}" fill-opacity="0.2" stroke="none" /><path d="M12 10l3-2" ${getStrokeProps()}/>`; break;
                     case 'emergency_exit': innerPath = `<rect x="1" y="4" width="22" height="16" rx="2" ${getStrokeProps()}/><rect x="4" y="6" width="6" height="12" ${getStrokeProps()} /><circle cx="15" cy="9" r="1.5" fill="${color}" stroke="none"/><path d="M13 12l2-1 2 1.5" ${getStrokeProps()}/><path d="M15 11v4" ${getStrokeProps()}/><path d="M15 15l-2 3" ${getStrokeProps()}/><path d="M15 15l2 2 1-1" ${getStrokeProps()}/>`; break;
                     case 'first_aid': innerPath = `<rect x="2" y="2" width="20" height="20" rx="2" ${getStrokeProps()} /><rect x="10" y="6" width="4" height="12" fill="${color}" stroke="none"/><rect x="6" y="10" width="12" height="4" fill="${color}" stroke="none"/>`; break;
-                    case 'restroom': innerPath = `<rect x="2" y="2" width="20" height="20" rx="2" ${getStrokeProps()}/><line x1="12" y1="4" x2="12" y2="20" ${getStrokeProps()}/><circle cx="7" cy="8" r="1.5" fill="${color}" stroke="none" /><path d="M5.5 11h3v5h-3z" fill="${color}" stroke="none" /><line x1="6" y1="16" x2="6" y2="19" ${getStrokeProps()}/><line x1="8" y1="16" x2="8" y2="19" ${getStrokeProps()}/><circle cx="17" cy="8" r="1.5" fill="${color}" stroke="none" /><path d="M17 10l-2 4h4l-2-4z" fill="${color}" stroke="none" /><line x1="16" y1="14" x2="16" y2="19" ${getStrokeProps()}/><line x1="18" y1="14" x2="18" y2="19" ${getStrokeProps()}/>`; break;
-                    case 'trailer': innerPath = `<rect x="2" y="4" width="20" height="16" rx="0" ${getStrokeProps()} /><line x1="2" y1="4" x2="22" y2="20" ${getStrokeProps()} opacity="0.2"/><line x1="22" y1="4" x2="2" y2="20" ${getStrokeProps()} opacity="0.2"/><rect x="6" y="8" width="12" height="8" rx="1" fill="${color}" fill-opacity="0.3" stroke="none" /><line x1="18" y1="10" x2="21" y2="10" ${getStrokeProps()} /><line x1="18" y1="14" x2="21" y2="14" ${getStrokeProps()} />`; break;
-                    case 'hydrant': innerPath = `<rect x="2" y="2" width="20" height="20" rx="2" ${getStrokeProps()}/><path d="M8 7v10" stroke="${color}" stroke-width="${symStroke * (24/size) * strokeWidth * 1.5}" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 7v10" stroke="${color}" stroke-width="${symStroke * (24/size) * strokeWidth * 1.5}" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 12h8" stroke="${color}" stroke-width="${symStroke * (24/size) * strokeWidth * 1.5}" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`; break;
-                    case 'forklift': innerPath = `<rect x="12" y="2.5" width="13.5" height="13.5" transform="rotate(45 12 2.5)" rx="1" ${getStrokeProps()} /><path d="M9 16h3v-5h-2v-1h3l1 6h-5z" fill="${color}" stroke="none"/><path d="M14 10v6" ${getStrokeProps()}/><line x1="7" y1="16" x2="9" y2="16" ${getStrokeProps()}/><circle cx="10" cy="17" r="1.5" fill="${color}" stroke="none"/><circle cx="15" cy="17" r="1.5" fill="${color}" stroke="none"/>`; break;
-                    case 'pallet': innerPath = `<rect x="2" y="2" width="20" height="20" rx="1" ${getStrokeProps()} /><rect x="5" y="5" width="14" height="14" ${getStrokeProps()} /><line x1="5" y1="12" x2="19" y2="12" ${getStrokeProps()}/><line x1="12" y1="5" x2="12" y2="19" ${getStrokeProps()}/>`; break;
-                    case 'rack': innerPath = `<rect x="2" y="2" width="20" height="20" ${getStrokeProps()}/><line x1="2" y1="8" x2="22" y2="8" ${getStrokeProps()}/><line x1="2" y1="16" x2="22" y2="16" ${getStrokeProps()}/><line x1="7" y1="2" x2="7" y2="22" ${getStrokeProps()}/><line x1="17" y1="2" x2="17" y2="22" ${getStrokeProps()}/>`; break;
-                    case 'conveyor': innerPath = `<rect x="2" y="6" width="20" height="12" rx="2" ${getStrokeProps()} /><circle cx="6" cy="12" r="2" fill="${color}" stroke="none"/><circle cx="12" cy="12" r="2" fill="${color}" stroke="none"/><circle cx="18" cy="12" r="2" fill="${color}" stroke="none"/>`; break;
-                    case 'container': innerPath = `<rect x="2" y="4" width="20" height="16" ${getStrokeProps()} /><line x1="6" y1="4" x2="6" y2="20" ${getStrokeProps()}/><line x1="10" y1="4" x2="10" y2="20" ${getStrokeProps()}/><line x1="14" y1="4" x2="14" y2="20" ${getStrokeProps()}/><line x1="18" y1="4" x2="18" y2="20" ${getStrokeProps()}/><rect x="6" y="8" width="12" height="8" rx="1" fill="${color}" fill-opacity="0.2" stroke="none" />`; break;
-                }
-                svgContent += `<g transform="${transform}">${innerPath}</g>`;
-            } else if (s.type === 'dimension') {
-                 const factor = unit === 'cm' ? 10 : (unit === 'm' ? 1000 : 1);
-                 // Dimensions usually have solid lines regardless of style, but user might want dashed dimension lines?
-                 // For now, applying to dimension lines too.
-                 if (s.subType === 'radial' || s.subType === 'diameter') {
-                     const radius = Math.sqrt(Math.pow(s.p1.x - s.p2.x, 2) + Math.pow(s.p1.y - s.p2.y, 2));
-                     const cmSize = 5; 
-                     svgContent += `<line x1="${s.p1.x - cmSize}" y1="${s.p1.y}" x2="${s.p1.x + cmSize}" y2="${s.p1.y}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
-                     svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y - cmSize}" x2="${s.p1.x}" y2="${s.p1.y + cmSize}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
-                     if (s.subType === 'diameter') {
-                         const diameter = radius * 2;
-                         const displayValue = (diameter / factor).toFixed(2);
-                         const text = s.textOverride || `Ø ${displayValue}`;
-                         const vecX = s.p1.x - s.p2.x;
-                         const vecY = s.p1.y - s.p2.y;
-                         svgContent += `<line x1="${s.p2.x}" y1="${s.p2.y}" x2="${s.p1.x + vecX}" y2="${s.p1.y + vecY}" stroke="${color}" stroke-width="${strokeWidth}" marker-start="url(#arrow)" marker-end="url(#arrow)" ${dashArray} />`;
-                         svgContent += `<text x="${s.offsetPoint.x}" y="${s.offsetPoint.y}" fill="${color}" font-size="${s.fontSize || 4}" font-family="sans-serif" text-anchor="middle" dominant-baseline="middle">${escapeXml(text)}</text>`;
-                     } else {
-                         const displayValue = (radius / factor).toFixed(2);
-                         const text = s.textOverride || `R ${displayValue}`;
-                         svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" marker-end="url(#arrow)" ${dashArray} />`;
-                         if (Math.sqrt(Math.pow(s.p2.x - s.offsetPoint.x, 2) + Math.pow(s.p2.y - s.offsetPoint.y, 2)) > 1) {
-                             svgContent += `<line x1="${s.p2.x}" y1="${s.p2.y}" x2="${s.offsetPoint.x}" y2="${s.offsetPoint.y}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
-                         }
-                         svgContent += `<text x="${s.offsetPoint.x}" y="${s.offsetPoint.y}" fill="${color}" font-size="${s.fontSize || 4}" font-family="sans-serif" text-anchor="middle" dominant-baseline="middle">${escapeXml(text)}</text>`;
-                     }
-                 } else {
-                     svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
-                     const midX = (s.p1.x + s.p2.x) / 2; const midY = (s.p1.y + s.p2.y) / 2;
-                     const dist = Math.sqrt(Math.pow(s.p1.x - s.p2.x, 2) + Math.pow(s.p1.y - s.p2.y, 2));
-                     const displayValue = (dist / factor).toFixed(2);
-                     const angle = (Math.atan2(s.p2.y - s.p1.y, s.p2.x - s.p1.x) * 180 / Math.PI + 360) % 360;
-                     let textAngle = angle; if (textAngle > 90 && textAngle < 270) { textAngle -= 180; }
-                     svgContent += `<text x="${midX}" y="${midY}" fill="${color}" font-size="${s.fontSize || 4}" font-family="sans-serif" text-anchor="middle" transform="rotate(${-textAngle} ${midX} ${midY})">${escapeXml(s.textOverride || displayValue)}</text>`;
+                    case 'restroom': innerPath = `<rect x="2" y="2" width="20" height="20" rx="2" ${getStrokeProps()}/><line x1="12" y1="4" x2="12" y2="20" ${getStrokeProps()}/><circle cx="7" cy="8" r="1.5" fill="${color}" stroke="none" /><path d="M5.5 11h3v5h-3z" fill="${color}" stroke="none" /><circle cx="17" cy="8" r="1.5" fill="${color}" stroke="none" /><path d="M17 10l-2 4h4l-2-4z" fill="${color}" stroke="none" />`; break;
+                    case 'hydrant': innerPath = `<rect x="2" y="2" width="20" height="20" rx="2" ${getStrokeProps()}/><path d="M8 7v10" ${getStrokeProps()}/><path d="M16 7v10" ${getStrokeProps()}/><path d="M8 12h8" ${getStrokeProps()}/>`; break;
+                    case 'trailer': innerPath = `<rect x="2" y="4" width="20" height="16" ${getStrokeProps()}/><rect x="6" y="8" width="12" height="8" rx="1" fill="${color}" fill-opacity="0.3" stroke="none"/>`; break;
+                    case 'forklift': innerPath = `<path d="M9 16h3v-5h-2v-1h3l1 6h-5z" fill="${color}" stroke="none"/><rect x="12" y="2.5" width="13.5" height="13.5" transform="rotate(45 12 2.5)" ${getStrokeProps()}/>`; break;
+                    case 'pallet': innerPath = `<rect x="5" y="5" width="14" height="14" ${getStrokeProps()}/><rect x="2" y="2" width="20" height="20" rx="1" ${getStrokeProps()}/>`; break;
+                    case 'rack': innerPath = `<rect x="2" y="2" width="20" height="20" ${getStrokeProps()}/><line x1="2" y1="8" x2="22" y2="8" ${getStrokeProps()}/>`; break;
+                    case 'conveyor': innerPath = `<rect x="2" y="6" width="20" height="12" rx="2" ${getStrokeProps()}/><circle cx="6" cy="12" r="2" fill="${color}" stroke="none"/><circle cx="12" cy="12" r="2" fill="${color}" stroke="none"/><circle cx="18" cy="12" r="2" fill="${color}" stroke="none"/>`; break;
+                    case 'container': innerPath = `<rect x="2" y="4" width="20" height="16" ${getStrokeProps()}/><line x1="6" y1="4" x2="6" y2="20" ${getStrokeProps()}/><line x1="10" y1="4" x2="10" y2="20" ${getStrokeProps()}/><line x1="14" y1="4" x2="14" y2="20" ${getStrokeProps()}/><line x1="18" y1="4" x2="18" y2="20" ${getStrokeProps()}/>`; break;
+                    case 'door': innerPath = `<path d="M3 21V3" ${getStrokeProps()} /><path d="M3 3h14v18" ${getStrokeProps()} stroke-dasharray="2 2" /><path d="M17 21H3" ${getStrokeProps()} /><path d="M3 21c9.941 0 18-8.059 18-18" ${getStrokeProps()} stroke-dasharray="2 2" fill="none" />`; break;
+                    case 'window': innerPath = `<rect x="3" y="6" width="18" height="12" ${getStrokeProps()} /><line x1="3" y1="12" x2="21" y2="12" ${getStrokeProps()} /><line x1="12" y1="6" x2="12" y2="18" ${getStrokeProps()} />`; break;
                  }
-             }
+                 svgContent += `<g transform="${transform}">${innerPath}</g>`;
+            }
         });
-        svgContent += `</g>`; // End Drawing Group
 
-        // Append Title Block if enabled
-        if (config.includeTitleBlock) {
-            svgContent += titleBlockSvg;
-        }
-
+        svgContent += `</g>`; // End content transform
+        
         svgContent += `</svg>`;
-        return { content: svgContent, width: finalSVGWidth, height: finalSVGHeight };
+        return svgContent;
     };
 
     const performExport = () => {
-        const result = generateSvgString(exportConfig);
-        
-        if (!result) {
-             setShowExportModal(false);
-             return;
-        }
-
-        const fileNameWithoutExt = currentFileName.replace('.json', '');
+        const svgString = generateSvgString(exportConfig);
+        if (!svgString) return;
 
         if (exportConfig.format === 'svg') {
-            downloadFile(`${fileNameWithoutExt}.svg`, result.content, 'image/svg+xml');
-            setShowExportModal(false);
-        } else if (exportConfig.format === 'png' || exportConfig.format === 'jpg') {
-            const { content, width, height } = result;
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            const img = new Image();
-            
-            // Cross origin for robustness, though usually not needed for blobs
-            img.crossOrigin = "Anonymous";
-            
-            // Robust Base64 encoding for SVG Data URI to handle UTF-8 and clip-paths correctly
-            // Using btoa with unescape(encodeURIComponent) handles UTF-8 characters in SVG string
-            const svg64 = window.btoa(unescape(encodeURIComponent(content)));
-            const image64 = `data:image/svg+xml;base64,${svg64}`;
-
-            const canvasW = width; 
-            const canvasH = height;
-
-            img.onload = () => {
-                try {
-                    canvas.width = canvasW;
-                    canvas.height = canvasH;
-                    if (ctx) {
-                        // Fill background (important for JPG or transparent PNGs wanting white bg)
-                        if (exportConfig.format === 'jpg' || exportConfig.theme === 'light') {
-                             ctx.fillStyle = '#FFFFFF';
-                             ctx.fillRect(0, 0, canvasW, canvasH);
-                        } else {
-                             ctx.fillStyle = '#000000';
-                             ctx.fillRect(0, 0, canvasW, canvasH);
-                        }
-    
-                        ctx.drawImage(img, 0, 0, canvasW, canvasH);
-                        
-                        const mimeType = exportConfig.format === 'jpg' ? 'image/jpeg' : 'image/png';
-                        const dataUrl = canvas.toDataURL(mimeType, 0.9);
-                        const a = document.createElement('a');
-                        a.href = dataUrl;
-                        a.download = `${fileNameWithoutExt}.${exportConfig.format}`;
-                        document.body.appendChild(a); // Firefox fix
-                        a.click();
-                        document.body.removeChild(a);
-                        canvas.remove();
-                    }
-                    setShowExportModal(false);
-                } catch (e) {
-                    console.error("Export canvas error:", e);
-                    alert("Error al generar la imagen. Intenta simplificar el dibujo.");
-                    setShowExportModal(false);
-                }
-            };
-            
-            img.onerror = (err) => {
-                console.error("Export image error:", err);
-                alert("No se pudo generar la imagen del Cajetín. Verifica que no haya caracteres extraños en los campos de texto.");
-                setShowExportModal(false);
-            };
-
-            // Set dimensions explicitly to help browser allocate buffer
-            img.width = canvasW;
-            img.height = canvasH;
-            img.src = image64;
-
+            downloadFile(`plano_${new Date().getTime()}.svg`, svgString, 'image/svg+xml');
         } else if (exportConfig.format === 'pdf') {
-             const printWindow = window.open('', '', 'width=800,height=600');
-            if (printWindow) {
-                const pageCss = `@page { size: ${exportConfig.paperSize} landscape; margin: 0; }`;
-                printWindow.document.write(`
-                    <html>
-                        <head>
-                            <title>${fileNameWithoutExt}</title>
-                            <style>
-                                ${pageCss}
-                                body { margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: white; overflow: hidden; }
-                                svg { width: 100%; height: 100%; }
-                                @media print { 
-                                    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-                                    svg { width: 100%; height: 100%; }
-                                }
-                            </style>
-                        </head>
-                        <body>
-                            ${result.content}
-                            <script>
-                                window.onload = function() {
-                                    setTimeout(() => {
-                                        window.print();
-                                    }, 500);
-                                }
-                            </script>
-                        </body>
-                    </html>
-                `);
-                printWindow.document.close();
+            // PDF Generation
+            const paper = exportConfig.paperSize; // A4, etc.
+            const orientation = 'landscape';
+            
+            const doc = new jsPDF({
+                orientation: orientation,
+                unit: 'mm',
+                format: paper.toLowerCase()
+            });
+
+            // Convert SVG to Canvas then to Image Data
+            const img = new Image();
+            const svgBlob = new Blob([svgString], {type: 'image/svg+xml;charset=utf-8'});
+            const url = URL.createObjectURL(svgBlob);
+            
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                // BEST QUALITY UPGRADE:
+                // P_SCALE in generateSvgString is 5 (1485px width for A4).
+                // Use scale 4 to get ~6000px width.
+                // 297mm * 4 * 5 = 5940px. 5940px / 11.7in = ~500 DPI.
+                const scale = 4; 
+                canvas.width = img.width * scale;
+                canvas.height = img.height * scale;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.scale(scale, scale);
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // Use PNG for PDF inner image to avoid JPEG compression artifacts on lines
+                    const imgData = canvas.toDataURL('image/png');
+                    
+                    const pageWidth = doc.internal.pageSize.getWidth();
+                    const pageHeight = doc.internal.pageSize.getHeight();
+                    
+                    doc.addImage(imgData, 'PNG', 0, 0, pageWidth, pageHeight);
+                    doc.save(`plano_${new Date().getTime()}.pdf`);
+                }
+                URL.revokeObjectURL(url);
                 setShowExportModal(false);
-            }
+            };
+            img.src = url;
+
+        } else {
+             // PNG / JPG
+            const img = new Image();
+            const svgBlob = new Blob([svgString], {type: 'image/svg+xml;charset=utf-8'});
+            const url = URL.createObjectURL(svgBlob);
+            
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                
+                // BEST QUALITY UPGRADE: Dynamic scaling for 4K+ output
+                // Calculate scale to ensure shortest side is at least 2160 or longest is 4000
+                // but protect against massive memory usage (cap at 10x or 8k px)
+                const maxDim = Math.max(img.width, img.height);
+                const targetDim = 4000;
+                
+                let scale = Math.max(2, targetDim / maxDim);
+                
+                // Safety Caps
+                if (scale > 10) scale = 10;
+                if (maxDim * scale > 12000) scale = 12000 / maxDim; // Hard limit for browsers
+
+                canvas.width = img.width * scale;
+                canvas.height = img.height * scale;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    // Fill background
+                    if (exportConfig.format === 'jpg' || exportConfig.theme === 'light') {
+                         ctx.fillStyle = exportConfig.theme === 'dark' ? '#000000' : '#FFFFFF';
+                         ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    }
+                    ctx.scale(scale, scale);
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // Max Quality JPEG (1.0)
+                    canvas.toBlob((blob) => {
+                         if(blob) {
+                              const a = document.createElement('a');
+                              a.href = URL.createObjectURL(blob);
+                              a.download = `plano_${new Date().getTime()}.${exportConfig.format}`;
+                              a.click();
+                         }
+                         setShowExportModal(false);
+                    }, `image/${exportConfig.format}`, 1.0);
+                }
+                URL.revokeObjectURL(url);
+            };
+            img.src = url;
         }
     };
 
     return (
-        <>
-            <header className="flex items-center justify-between p-2 h-14 bg-base-100 dark:bg-dark-base-100 border-b border-base-300 dark:border-dark-base-300 flex-shrink-0 z-[60] relative">
-                <div className="flex items-center gap-6">
-                    <h1 className="text-lg font-bold select-none">PMCAD</h1>
-                    
-                    {/* File Menu */}
-                    <div className="relative">
-                        <button 
-                            onClick={() => setIsFileMenuOpen(!isFileMenuOpen)}
-                            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                                isFileMenuOpen 
-                                ? 'bg-base-200 dark:bg-dark-base-300 text-primary' 
-                                : 'hover:bg-base-200 dark:hover:bg-dark-base-300 text-base-content dark:text-dark-base-content'
-                            }`}
-                        >
-                            Archivo
-                        </button>
-                        
-                        {isFileMenuOpen && (
-                            <>
-                                <div className="fixed inset-0 z-40" onClick={() => setIsFileMenuOpen(false)}></div>
-                                <div className="absolute top-full left-0 mt-1 w-64 bg-base-100 dark:bg-dark-base-100 border border-base-300 dark:border-dark-base-300 rounded-lg shadow-xl z-50 py-1 flex flex-col overflow-hidden ring-1 ring-black ring-opacity-5">
-                                    <button 
-                                        onClick={handleNew} 
-                                        className="px-4 py-2 text-left text-sm hover:bg-base-200 dark:hover:bg-dark-base-200 transition-colors flex items-center gap-3 w-full"
-                                    >
-                                        <FilePlusIcon className="w-4 h-4 opacity-70"/>
-                                        <span>Nuevo</span>
-                                    </button>
-                                    <button 
-                                        onClick={() => fileInputRef.current?.click()} 
-                                        className="px-4 py-2 text-left text-sm hover:bg-base-200 dark:hover:bg-dark-base-200 transition-colors flex items-center gap-3 w-full"
-                                    >
-                                        <FolderOpenIcon className="w-4 h-4 opacity-70"/>
-                                        <span>Abrir...</span>
-                                    </button>
-                                    <button 
-                                        onClick={() => templateInputRef.current?.click()} 
-                                        className="px-4 py-2 text-left text-sm hover:bg-base-200 dark:hover:bg-dark-base-200 transition-colors flex items-center gap-3 w-full"
-                                    >
-                                        <ImageIcon className="w-4 h-4 opacity-70"/>
-                                        <span>Importar Plantilla...</span>
-                                    </button>
-
-                                    <div className="h-px bg-base-300 dark:bg-dark-base-300 my-1 mx-2"></div>
-                                    <button 
-                                        onClick={handleSave} 
-                                        className="px-4 py-2 text-left text-sm hover:bg-base-200 dark:hover:bg-dark-base-200 transition-colors flex items-center gap-3 w-full"
-                                    >
-                                        <SaveIcon className="w-4 h-4 opacity-70"/>
-                                        <span>Guardar</span>
-                                    </button>
-                                    <button 
-                                        onClick={initiateSaveAs} 
-                                        className="px-4 py-2 text-left text-sm hover:bg-base-200 dark:hover:bg-dark-base-200 transition-colors flex items-center gap-3 w-full"
-                                    >
-                                        <span className="w-4 h-4"></span>
-                                        <span>Guardar como...</span>
-                                    </button>
-                                    
-                                    <div className="h-px bg-base-300 dark:bg-dark-base-300 my-1 mx-2"></div>
-                                    
-                                    <button 
-                                        onClick={initiateExport} 
-                                        className="px-4 py-2 text-left text-sm hover:bg-base-200 dark:hover:bg-dark-base-200 transition-colors flex items-center gap-3 w-full"
-                                    >
-                                        <DownloadIcon className="w-4 h-4 opacity-70"/>
-                                        <span>Exportar...</span>
-                                    </button>
-                                </div>
-                            </>
-                        )}
-                        <input 
-                            type="file" 
-                            ref={fileInputRef} 
-                            onChange={handleOpen} 
-                            accept=".json" 
-                            className="hidden" 
-                        />
-                        <input 
-                            type="file" 
-                            ref={templateInputRef} 
-                            onChange={handleImportTemplate} 
-                            accept="image/*" 
-                            className="hidden" 
-                        />
-                    </div>
+        <header className="h-14 bg-base-100 dark:bg-dark-base-100 border-b border-base-300 dark:border-dark-base-300 flex items-center px-4 justify-between select-none z-50">
+            <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3">
+                   <div className="w-9 h-9 bg-gradient-to-br from-primary via-blue-600 to-secondary rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/20">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6">
+                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                        </svg>
+                   </div>
+                   <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-secondary tracking-tight">
+                        PMC CAD
+                   </span>
                 </div>
+                
+                {/* Separator */}
+                <div className="h-6 w-[1px] bg-base-300 dark:bg-dark-base-300 mx-2"></div>
 
-                <div className="flex items-center gap-4 text-sm">
-                    {/* Template Controls */}
-                    {templateImage && (
+                {/* Project Name Input */}
+                <input
+                    type="text"
+                    value={currentFileName.replace(/\.json$/i, '')}
+                    onChange={(e) => setCurrentFileName(e.target.value)}
+                    onBlur={() => {
+                        if(!currentFileName.trim()) setCurrentFileName('dibujo_sin_titulo.json');
+                    }}
+                    className="bg-transparent hover:bg-base-200 dark:hover:bg-dark-base-300 border border-transparent focus:border-primary rounded px-2 py-1 text-sm font-medium text-base-content dark:text-dark-base-content focus:outline-none transition-all w-48 placeholder-opacity-50"
+                    placeholder="Nombre del proyecto"
+                />
+                
+                {/* Separator */}
+                <div className="h-6 w-[1px] bg-base-300 dark:bg-dark-base-300 mx-2"></div>
+
+                {/* File Menu */}
+                <div className="relative">
+                    <button 
+                        onClick={() => setIsFileMenuOpen(!isFileMenuOpen)}
+                        className="px-3 py-1.5 text-sm font-medium hover:bg-base-200 dark:hover:bg-dark-base-300 rounded-md transition-colors flex items-center gap-1"
+                    >
+                        Archivo
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3 opacity-50"><path d="M7 10l5 5 5-5z"/></svg>
+                    </button>
+                    
+                    {isFileMenuOpen && (
                         <>
-                        <div className="flex items-center gap-2 bg-base-200 dark:bg-dark-base-200 px-2 py-1 rounded-md border border-base-300 dark:border-dark-base-300">
-                            <span className="text-xs font-bold uppercase opacity-50 mr-1">Plantilla</span>
-                             <button 
-                                onClick={() => updateTemplateImage({ isVisible: !templateImage.isVisible })}
-                                className={`p-1.5 rounded hover:bg-base-300 dark:hover:bg-dark-base-300 ${!templateImage.isVisible ? 'opacity-50' : 'text-primary'}`}
-                                title={templateImage.isVisible ? "Ocultar plantilla" : "Mostrar plantilla"}
-                            >
-                                {templateImage.isVisible ? <EyeIcon className="w-4 h-4"/> : <EyeOffIcon className="w-4 h-4"/>}
-                            </button>
-                            <div className="flex items-center gap-2 px-2 border-l border-base-300 dark:border-dark-base-300">
-                                <input 
-                                    type="range" 
-                                    min="0.1" 
-                                    max="1" 
-                                    step="0.1" 
-                                    value={templateImage.opacity}
-                                    onChange={(e) => updateTemplateImage({ opacity: parseFloat(e.target.value) })}
-                                    className="w-16 h-1 bg-base-300 rounded-lg appearance-none cursor-pointer"
-                                    title="Opacidad"
-                                />
+                            <div className="fixed inset-0 z-40" onClick={() => setIsFileMenuOpen(false)}></div>
+                            <div className="absolute top-full left-0 mt-1 w-56 bg-base-100 dark:bg-dark-base-100 border border-base-300 dark:border-dark-base-300 rounded-lg shadow-xl z-50 py-1 animate-in fade-in zoom-in duration-100">
+                                <button onClick={handleNew} className="w-full text-left px-4 py-2 hover:bg-base-200 dark:hover:bg-dark-base-300 text-sm flex items-center gap-2">
+                                    <FilePlusIcon className="w-4 h-4 opacity-70"/> Nuevo
+                                </button>
+                                <button onClick={() => fileInputRef.current?.click()} className="w-full text-left px-4 py-2 hover:bg-base-200 dark:hover:bg-dark-base-300 text-sm flex items-center gap-2">
+                                    <FolderOpenIcon className="w-4 h-4 opacity-70"/> Abrir...
+                                </button>
+                                <button onClick={handleSave} className="w-full text-left px-4 py-2 hover:bg-base-200 dark:hover:bg-dark-base-300 text-sm flex items-center gap-2">
+                                    <SaveIcon className="w-4 h-4 opacity-70"/> Guardar
+                                </button>
+                                <button onClick={initiateSaveAs} className="w-full text-left px-4 py-2 hover:bg-base-200 dark:hover:bg-dark-base-300 text-sm flex items-center gap-2">
+                                    <SaveIcon className="w-4 h-4 opacity-70"/> Guardar como...
+                                </button>
+                                <div className="border-t border-base-300 dark:border-dark-base-300 my-1"></div>
+                                <button onClick={() => templateInputRef.current?.click()} className="w-full text-left px-4 py-2 hover:bg-base-200 dark:hover:bg-dark-base-300 text-sm flex items-center gap-2">
+                                    <ImageIcon className="w-4 h-4 opacity-70"/> Importar Plantilla
+                                </button>
+                                <div className="border-t border-base-300 dark:border-dark-base-300 my-1"></div>
+                                <button onClick={initiateExport} className="w-full text-left px-4 py-2 hover:bg-base-200 dark:hover:bg-dark-base-300 text-sm flex items-center gap-2">
+                                    <DownloadIcon className="w-4 h-4 opacity-70"/> Exportar / Imprimir
+                                </button>
                             </div>
-                             <button 
-                                onClick={() => setShowTemplateSettingsModal(true)}
-                                className="p-1.5 rounded hover:bg-base-300 dark:hover:bg-dark-base-300"
-                                title="Ajustar posición y tamaño"
-                            >
-                                <SettingsIcon className="w-4 h-4"/>
-                            </button>
-                             <button 
-                                onClick={() => setTemplateImage(null)}
-                                className="p-1.5 rounded hover:bg-red-500 hover:text-white text-base-content/50"
-                                title="Eliminar plantilla"
-                            >
-                                <TrashIcon className="w-4 h-4"/>
-                            </button>
-                        </div>
-                        <div className="w-px h-6 bg-base-300 dark:bg-dark-base-300"></div>
                         </>
                     )}
-
-                    <div className="flex items-center gap-2">
-                        <span className="text-xs text-base-content/70 dark:text-dark-base-content/70 hidden sm:inline">Ajustar a:</span>
-                        <SnapToggle label="Puntos Finales" mode="endpoints" />
-                        <SnapToggle label="Puntos Medios" mode="midpoints" />
-                        <SnapToggle label="Centros" mode="centers" />
-                        <SnapToggle label="Inferencia" mode="inference" />
-                    </div>
-                     <div className="w-px h-6 bg-base-300 dark:bg-dark-base-300"></div>
-                     <div className="flex items-center gap-2">
-                         <button
-                            onClick={() => setIsOrthoMode(!isOrthoMode)}
-                            className={`px-3 py-1.5 text-xs rounded-md flex items-center gap-2 transition-colors ${
-                                isOrthoMode ? 'bg-primary text-primary-content' : 'bg-base-200 hover:bg-base-300 dark:bg-dark-base-300 dark:hover:bg-dark-base-200'
-                            }`}
-                        >
-                            Ortho
-                            {isOrthoMode && <CheckIcon className="w-3 h-3" />}
-                        </button>
-                     </div>
-                     <div className="w-px h-6 bg-base-300 dark:bg-dark-base-300"></div>
-                     
-                     {/* Scale Selector */}
-                     <div className="flex items-center gap-2">
-                        <label htmlFor="scale-select" className="text-xs text-base-content/70 dark:text-dark-base-content/70 hidden sm:inline">Escala:</label>
-                        <select
-                            id="scale-select"
-                            value={currentScaleValue}
-                            onChange={handleScaleChange}
-                            className="bg-base-200 dark:bg-dark-base-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer w-20"
-                        >
-                            {currentScaleValue === 'custom' && <option value="custom">{(viewTransform.scale * 100).toFixed(0)}%</option>}
-                            {scales.map(s => <option key={s.label} value={s.value}>{s.label}</option>)}
-                        </select>
-                    </div>
-
-                     <div className="w-px h-6 bg-base-300 dark:bg-dark-base-300"></div>
-                    <div className="flex items-center gap-2">
-                        <label htmlFor="unit-select" className="text-xs text-base-content/70 dark:text-dark-base-content/70 hidden sm:inline">Unidades:</label>
-                        <select
-                            id="unit-select"
-                            value={unit}
-                            onChange={(e) => setUnit(e.target.value as Unit)}
-                            className="bg-base-200 dark:bg-dark-base-300 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
-                        >
-                            {units.map(u => <option key={u} value={u}>{u}</option>)}
-                        </select>
-                    </div>
                 </div>
-            </header>
+            </div>
 
-            {/* --- Template Settings Modal --- */}
-            {showTemplateSettingsModal && templateImage && (
-                 <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-base-100 dark:bg-dark-base-100 rounded-xl shadow-2xl border border-base-300 dark:border-dark-base-300 w-full max-w-sm animate-in fade-in zoom-in duration-200 overflow-hidden">
-                        <div className="p-4 border-b border-base-300 dark:border-dark-base-300 flex justify-between items-center bg-base-200 dark:bg-dark-base-200">
-                            <h3 className="font-bold text-lg">Ajustes de Plantilla</h3>
-                            <button onClick={() => setShowTemplateSettingsModal(false)} className="p-1 hover:bg-base-300 dark:hover:bg-dark-base-300 rounded-full transition-colors">
-                                <XIcon className="w-5 h-5" />
-                            </button>
-                        </div>
-                        <div className="p-6 space-y-4">
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-xs font-bold opacity-60 mb-1">Posición X</label>
-                                    <input 
-                                        type="number" 
-                                        value={templateImage.x} 
-                                        onChange={(e) => updateTemplateImage({ x: parseFloat(e.target.value) })}
-                                        className="w-full bg-base-200 dark:bg-dark-base-300 px-3 py-2 rounded-lg text-sm"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold opacity-60 mb-1">Posición Y</label>
-                                    <input 
-                                        type="number" 
-                                        value={templateImage.y} 
-                                        onChange={(e) => updateTemplateImage({ y: parseFloat(e.target.value) })}
-                                        className="w-full bg-base-200 dark:bg-dark-base-300 px-3 py-2 rounded-lg text-sm"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold opacity-60 mb-1">Ancho</label>
-                                    <input 
-                                        type="number" 
-                                        value={templateImage.width} 
-                                        onChange={(e) => updateTemplateImage({ width: parseFloat(e.target.value) })}
-                                        className="w-full bg-base-200 dark:bg-dark-base-300 px-3 py-2 rounded-lg text-sm"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold opacity-60 mb-1">Alto</label>
-                                    <input 
-                                        type="number" 
-                                        value={templateImage.height} 
-                                        onChange={(e) => updateTemplateImage({ height: parseFloat(e.target.value) })}
-                                        className="w-full bg-base-200 dark:bg-dark-base-300 px-3 py-2 rounded-lg text-sm"
-                                    />
-                                </div>
-                            </div>
-                            
-                            <div className="pt-4 border-t border-base-300 dark:border-dark-base-300 flex justify-end">
-                                <button 
-                                    onClick={() => setShowTemplateSettingsModal(false)}
-                                    className="px-4 py-2 bg-primary hover:bg-primary-focus text-white rounded-lg transition-colors font-medium"
-                                >
-                                    Listo
-                                </button>
-                            </div>
-                        </div>
-                    </div>
+            {/* Hidden Inputs */}
+            <input type="file" ref={fileInputRef} onChange={handleOpen} accept=".json" className="hidden" />
+            <input type="file" ref={templateInputRef} onChange={handleImportTemplate} accept="image/*" className="hidden" />
+
+            {/* Center Controls */}
+            <div className="flex items-center gap-2">
+                 <div className="flex bg-base-200 dark:bg-dark-base-300 rounded-lg p-1 gap-1">
+                    <SnapToggle label="Extremos" mode="endpoints" />
+                    <SnapToggle label="Medios" mode="midpoints" />
+                    <SnapToggle label="Centros" mode="centers" />
+                    <SnapToggle label="Guías" mode="inference" />
                  </div>
-            )}
+                 <div className="w-[1px] h-6 bg-base-300 dark:bg-dark-base-300 mx-1"></div>
+                 <button 
+                    onClick={() => setIsOrthoMode(!isOrthoMode)}
+                    className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors ${isOrthoMode ? 'bg-secondary text-white' : 'bg-base-200 hover:bg-base-300 dark:bg-dark-base-300'}`}
+                 >
+                    ORTHO
+                 </button>
+            </div>
 
-            {/* --- New Drawing Modal --- */}
+            {/* Right Controls */}
+            <div className="flex items-center gap-3">
+                 {/* Template Controls */}
+                 {templateImage && (
+                      <div className="flex items-center gap-1 bg-base-200 dark:bg-dark-base-300 rounded-md px-2 py-1">
+                          <button onClick={() => updateTemplateImage({ isVisible: !templateImage.isVisible })} className="p-1 hover:bg-base-300 dark:hover:bg-dark-base-200 rounded">
+                              {templateImage.isVisible ? <EyeIcon className="w-4 h-4"/> : <EyeOffIcon className="w-4 h-4 text-base-content/50"/>}
+                          </button>
+                          <input 
+                            type="range" min="0" max="1" step="0.1" 
+                            value={templateImage.opacity} 
+                            onChange={(e) => updateTemplateImage({ opacity: parseFloat(e.target.value) })}
+                            className="w-16 h-1 accent-primary"
+                          />
+                          <button onClick={() => setTemplateImage(null)} className="p-1 hover:bg-red-100 text-red-400 rounded">
+                              <XIcon className="w-4 h-4"/>
+                          </button>
+                      </div>
+                 )}
+
+                 <div className="flex items-center bg-base-200 dark:bg-dark-base-300 rounded-md px-2">
+                    <span className="text-xs opacity-50 mr-2">Unidad:</span>
+                    <select 
+                        value={unit} 
+                        onChange={(e) => setUnit(e.target.value as Unit)}
+                        className="bg-transparent text-sm py-1.5 focus:outline-none"
+                    >
+                        {units.map(u => <option key={u} value={u}>{u.toUpperCase()}</option>)}
+                    </select>
+                 </div>
+                 
+                 <div className="flex items-center bg-base-200 dark:bg-dark-base-300 rounded-md px-2">
+                    <span className="text-xs opacity-50 mr-2">Escala:</span>
+                    <select 
+                        value={currentScaleValue}
+                        onChange={handleScaleChange}
+                        className="bg-transparent text-sm py-1.5 focus:outline-none w-16"
+                    >
+                        {scales.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                        <option value="custom">Custom</option>
+                    </select>
+                 </div>
+            </div>
+
+            {/* MODALS */}
+            {/* New Drawing Confirmation */}
             {showNewDrawingModal && (
-                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-base-100 dark:bg-dark-base-100 rounded-xl shadow-2xl border border-base-300 dark:border-dark-base-300 w-full max-w-sm animate-in fade-in zoom-in duration-200 overflow-hidden">
-                        <div className="p-4 border-b border-base-300 dark:border-dark-base-300 flex justify-between items-center bg-base-200 dark:bg-dark-base-200">
-                            <h3 className="font-bold text-lg">Nuevo Dibujo</h3>
-                            <button onClick={() => setShowNewDrawingModal(false)} className="p-1 hover:bg-base-300 dark:hover:bg-dark-base-300 rounded-full transition-colors">
-                                <XIcon className="w-5 h-5" />
-                            </button>
-                        </div>
-                        <div className="p-6 text-center">
-                            <div className="w-16 h-16 bg-secondary/10 rounded-full flex items-center justify-center mx-auto mb-4 text-secondary">
-                                <FilePlusIcon className="w-8 h-8" />
-                            </div>
-                            <h4 className="text-lg font-bold mb-2">¿Empezar desde cero?</h4>
-                            <p className="text-sm opacity-70 mb-6">
-                                Se perderán los cambios no guardados del dibujo actual. Esta acción no se puede deshacer.
-                            </p>
-                            
-                            <div className="flex gap-3 justify-center">
-                                <button 
-                                    onClick={() => setShowNewDrawingModal(false)}
-                                    className="px-4 py-2 rounded-lg hover:bg-base-200 dark:hover:bg-dark-base-200 transition-colors"
-                                >
-                                    Cancelar
-                                </button>
-                                <button 
-                                    onClick={confirmNewDrawing}
-                                    className="px-4 py-2 bg-secondary hover:bg-secondary-focus text-white rounded-lg transition-colors font-medium flex items-center gap-2"
-                                >
-                                    Confirmar
-                                </button>
-                            </div>
+                <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4">
+                    <div className="bg-base-100 dark:bg-dark-base-100 p-6 rounded-xl shadow-2xl max-w-sm w-full border border-base-300 dark:border-dark-base-300">
+                        <h3 className="text-lg font-bold mb-2">¿Crear nuevo dibujo?</h3>
+                        <p className="text-sm opacity-70 mb-6">Los cambios no guardados se perderán permanentemente.</p>
+                        <div className="flex justify-end gap-2">
+                            <button onClick={() => setShowNewDrawingModal(false)} className="px-4 py-2 rounded-lg hover:bg-base-200 dark:hover:bg-dark-base-300 text-sm">Cancelar</button>
+                            <button onClick={confirmNewDrawing} className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary-focus">Confirmar</button>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* --- Save As Modal --- */}
+            {/* Save As Modal */}
             {showSaveAsModal && (
-                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-base-100 dark:bg-dark-base-100 rounded-xl shadow-2xl border border-base-300 dark:border-dark-base-300 w-full max-w-md animate-in fade-in zoom-in duration-200 overflow-hidden">
-                        <div className="p-4 border-b border-base-300 dark:border-dark-base-300 flex justify-between items-center bg-base-200 dark:bg-dark-base-200">
-                            <h3 className="font-bold text-lg">Guardar Proyecto</h3>
-                            <button onClick={() => setShowSaveAsModal(false)} className="p-1 hover:bg-base-300 dark:hover:bg-dark-base-300 rounded-full transition-colors">
-                                <XIcon className="w-5 h-5" />
-                            </button>
+                <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4">
+                    <form onSubmit={performSaveAs} className="bg-base-100 dark:bg-dark-base-100 p-6 rounded-xl shadow-2xl max-w-sm w-full border border-base-300 dark:border-dark-base-300">
+                        <h3 className="text-lg font-bold mb-4">Guardar como</h3>
+                        <div className="mb-4">
+                            <label className="block text-xs font-semibold opacity-70 mb-1">Nombre del archivo</label>
+                            <input 
+                                type="text" 
+                                autoFocus
+                                value={saveAsName}
+                                onChange={(e) => setSaveAsName(e.target.value)}
+                                className="w-full bg-base-200 dark:bg-dark-base-200 px-3 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                            />
                         </div>
-                        <form onSubmit={performSaveAs} className="p-6">
-                            <label className="block text-sm font-medium mb-2 opacity-80">Nombre del Archivo</label>
-                            <div className="flex items-center bg-base-200 dark:bg-dark-base-200 rounded-lg border border-base-300 dark:border-dark-base-300 focus-within:ring-2 focus-within:ring-primary transition-all">
-                                <input 
-                                    type="text" 
-                                    value={saveAsName}
-                                    onChange={(e) => setSaveAsName(e.target.value)}
-                                    className="flex-grow bg-transparent p-3 outline-none"
-                                    placeholder="mi_proyecto"
-                                    autoFocus
-                                />
-                                <span className="pr-3 opacity-50 select-none text-sm">.json</span>
-                            </div>
-                            <p className="text-xs mt-2 opacity-60">Se guardará una copia editable del proyecto actual.</p>
-                            
-                            <div className="flex gap-3 mt-6 justify-end">
-                                <button 
-                                    type="button"
-                                    onClick={() => setShowSaveAsModal(false)}
-                                    className="px-4 py-2 rounded-lg hover:bg-base-200 dark:hover:bg-dark-base-200 transition-colors"
-                                >
-                                    Cancelar
-                                </button>
-                                <button 
-                                    type="submit"
-                                    className="px-4 py-2 bg-primary hover:bg-primary-focus text-white rounded-lg transition-colors font-medium flex items-center gap-2"
-                                >
-                                    <SaveIcon className="w-4 h-4"/>
-                                    Guardar
-                                </button>
-                            </div>
-                        </form>
-                    </div>
+                        <div className="flex justify-end gap-2">
+                            <button type="button" onClick={() => setShowSaveAsModal(false)} className="px-4 py-2 rounded-lg hover:bg-base-200 dark:hover:bg-dark-base-300 text-sm">Cancelar</button>
+                            <button type="submit" className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary-focus">Guardar</button>
+                        </div>
+                    </form>
                 </div>
             )}
 
-            {/* --- Export Modal --- */}
+            {/* Export Modal */}
             {showExportModal && (
-                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                    <div className="bg-base-100 dark:bg-dark-base-100 rounded-xl shadow-2xl border border-base-300 dark:border-dark-base-300 w-full max-w-lg max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in duration-200">
-                        <div className="p-4 border-b border-base-300 dark:border-dark-base-300 flex justify-between items-center bg-base-200 dark:bg-dark-base-200 sticky top-0 z-10">
-                            <h3 className="font-bold text-lg">Exportar Dibujo</h3>
-                            <button onClick={() => setShowExportModal(false)} className="p-1 hover:bg-base-300 dark:hover:bg-dark-base-300 rounded-full transition-colors">
-                                <XIcon className="w-5 h-5" />
-                            </button>
-                        </div>
-                        <div className="p-6 space-y-6">
-                            
-                            {/* Format Selection */}
+                <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4">
+                    <div className="bg-base-100 dark:bg-dark-base-100 p-6 rounded-xl shadow-2xl max-w-md w-full border border-base-300 dark:border-dark-base-300">
+                        <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                            <DownloadIcon className="w-5 h-5"/> Exportar / Imprimir
+                        </h3>
+                        
+                        <div className="space-y-4 mb-6">
                             <div>
-                                <label className="block text-sm font-bold mb-3 opacity-80">Formato</label>
-                                <div className="grid grid-cols-4 gap-3">
-                                    {(['png', 'jpg', 'pdf', 'svg'] as const).map(fmt => (
-                                        <button
+                                <label className="block text-xs font-semibold opacity-70 mb-2">Formato</label>
+                                <div className="grid grid-cols-4 gap-2">
+                                    {['png', 'jpg', 'svg', 'pdf'].map(fmt => (
+                                        <button 
                                             key={fmt}
-                                            onClick={() => setExportConfig(prev => ({
-                                                ...prev, 
-                                                format: fmt, 
-                                                theme: fmt === 'pdf' ? 'light' : prev.theme,
-                                                includeTitleBlock: fmt === 'pdf' ? prev.includeTitleBlock : false // Disable title block for non-PDF
-                                            }))}
-                                            className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all ${
-                                                exportConfig.format === fmt 
-                                                ? 'bg-primary/10 border-primary text-primary' 
-                                                : 'bg-base-200 dark:bg-dark-base-200 border-transparent hover:border-base-300 dark:hover:border-dark-base-300 opacity-70 hover:opacity-100'
-                                            }`}
+                                            onClick={() => setExportConfig(p => ({...p, format: fmt as any}))}
+                                            className={`py-2 text-sm rounded-lg border ${exportConfig.format === fmt ? 'bg-primary text-white border-primary' : 'border-base-300 hover:bg-base-200 dark:border-dark-base-300 dark:hover:bg-dark-base-300'}`}
                                         >
-                                            <span className="text-base font-bold uppercase">{fmt}</span>
+                                            {fmt.toUpperCase()}
                                         </button>
                                     ))}
                                 </div>
                             </div>
 
-                            {/* Title Block Toggle - EXCLUSIVE TO PDF */}
+                            <div>
+                                <label className="block text-xs font-semibold opacity-70 mb-2">Tema</label>
+                                <div className="flex gap-4">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input type="radio" name="theme" checked={exportConfig.theme === 'light'} onChange={() => setExportConfig(p => ({...p, theme: 'light'}))} className="accent-primary"/>
+                                        <span className="text-sm">Claro (Impresión)</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input type="radio" name="theme" checked={exportConfig.theme === 'dark'} onChange={() => setExportConfig(p => ({...p, theme: 'dark'}))} className="accent-primary"/>
+                                        <span className="text-sm">Oscuro</span>
+                                    </label>
+                                </div>
+                            </div>
+                            
                             {exportConfig.format === 'pdf' && (
-                                <div className="flex items-center gap-3 bg-base-200 dark:bg-dark-base-200 p-3 rounded-lg border border-base-300 dark:border-dark-base-300">
-                                    <input 
-                                        type="checkbox" 
-                                        id="includeTitleBlock"
-                                        checked={exportConfig.includeTitleBlock}
-                                        onChange={(e) => setExportConfig({...exportConfig, includeTitleBlock: e.target.checked, theme: e.target.checked ? 'light' : exportConfig.theme})}
-                                        className="checkbox checkbox-primary checkbox-sm"
-                                    />
-                                    <label htmlFor="includeTitleBlock" className="text-sm font-bold cursor-pointer select-none flex-grow">
-                                        Incluir Rótulo / Cajetín (Hoja Técnica)
-                                        <span className="block text-xs opacity-60 font-normal mt-1">
-                                            Añade marco y datos para planos profesionales.
-                                        </span>
-                                    </label>
-                                </div>
-                            )}
-
-                            {/* Title Block Fields (Conditionally Rendered) */}
-                            {exportConfig.includeTitleBlock && exportConfig.format === 'pdf' && (
-                                <div className="space-y-3 bg-base-200/50 dark:bg-dark-base-200/50 p-4 rounded-lg border border-base-300 dark:border-dark-base-300">
-                                    <div className="grid grid-cols-1 gap-3 mb-2">
-                                         <div>
-                                            <label className="block text-[10px] font-bold uppercase opacity-60 mb-1">Empresa / Organización</label>
-                                            <input 
-                                                type="text" 
-                                                value={titleBlockData.companyName}
-                                                onChange={(e) => setTitleBlockData({...titleBlockData, companyName: e.target.value})}
-                                                className="w-full bg-base-100 dark:bg-dark-base-300 px-2 py-1.5 rounded border border-base-300 dark:border-dark-base-100 text-sm focus:ring-1 focus:ring-primary outline-none"
-                                            />
-                                        </div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-3">
-                                        <div className="col-span-2">
-                                            <label className="block text-[10px] font-bold uppercase opacity-60 mb-1">Nombre del Proyecto</label>
-                                            <input 
-                                                type="text" 
-                                                value={titleBlockData.projectName}
-                                                onChange={(e) => setTitleBlockData({...titleBlockData, projectName: e.target.value})}
-                                                className="w-full bg-base-100 dark:bg-dark-base-300 px-2 py-1.5 rounded border border-base-300 dark:border-dark-base-100 text-sm focus:ring-1 focus:ring-primary outline-none"
-                                            />
-                                        </div>
-                                        <div className="col-span-2">
-                                            <label className="block text-[10px] font-bold uppercase opacity-60 mb-1">Contenido / Título</label>
-                                            <input 
-                                                type="text" 
-                                                value={titleBlockData.drawingTitle}
-                                                onChange={(e) => setTitleBlockData({...titleBlockData, drawingTitle: e.target.value})}
-                                                className="w-full bg-base-100 dark:bg-dark-base-300 px-2 py-1.5 rounded border border-base-300 dark:border-dark-base-100 text-sm focus:ring-1 focus:ring-primary outline-none"
-                                            />
-                                        </div>
-                                        <div className="col-span-2">
-                                            <label className="block text-[10px] font-bold uppercase opacity-60 mb-1">Dibujó (Nombre Completo)</label>
-                                            <input 
-                                                type="text" 
-                                                value={titleBlockData.drawnBy}
-                                                onChange={(e) => setTitleBlockData({...titleBlockData, drawnBy: e.target.value})}
-                                                className="w-full bg-base-100 dark:bg-dark-base-300 px-2 py-1.5 rounded border border-base-300 dark:border-dark-base-100 text-sm focus:ring-1 focus:ring-primary outline-none"
-                                            />
-                                        </div>
-                                        <div className="col-span-2">
-                                            <label className="block text-[10px] font-bold uppercase opacity-60 mb-1">Revisó (Nombre Completo)</label>
-                                            <input 
-                                                type="text" 
-                                                value={titleBlockData.checkedBy}
-                                                onChange={(e) => setTitleBlockData({...titleBlockData, checkedBy: e.target.value})}
-                                                className="w-full bg-base-100 dark:bg-dark-base-300 px-2 py-1.5 rounded border border-base-300 dark:border-dark-base-100 text-sm focus:ring-1 focus:ring-primary outline-none"
-                                            />
-                                        </div>
-                                         <div>
-                                            <label className="block text-[10px] font-bold uppercase opacity-60 mb-1">Escala</label>
-                                            <input 
-                                                type="text" 
-                                                value={titleBlockData.scale}
-                                                onChange={(e) => setTitleBlockData({...titleBlockData, scale: e.target.value})}
-                                                className="w-full bg-base-100 dark:bg-dark-base-300 px-2 py-1.5 rounded border border-base-300 dark:border-dark-base-100 text-sm focus:ring-1 focus:ring-primary outline-none"
-                                            />
-                                        </div>
-                                        <div className="flex gap-2">
-                                            <div className="flex-1">
-                                                <label className="block text-[10px] font-bold uppercase opacity-60 mb-1">Clave / Plano</label>
-                                                <input 
-                                                    type="text" 
-                                                    value={titleBlockData.sheetNumber}
-                                                    onChange={(e) => setTitleBlockData({...titleBlockData, sheetNumber: e.target.value})}
-                                                    className="w-full bg-base-100 dark:bg-dark-base-300 px-2 py-1.5 rounded border border-base-300 dark:border-dark-base-100 text-sm focus:ring-1 focus:ring-primary outline-none font-bold"
-                                                />
-                                            </div>
-                                            <div className="w-16">
-                                                <label className="block text-[10px] font-bold uppercase opacity-60 mb-1">Rev.</label>
-                                                <input 
-                                                    type="text" 
-                                                    value={titleBlockData.revision}
-                                                    onChange={(e) => setTitleBlockData({...titleBlockData, revision: e.target.value})}
-                                                    className="w-full bg-base-100 dark:bg-dark-base-300 px-2 py-1.5 rounded border border-base-300 dark:border-dark-base-100 text-sm focus:ring-1 focus:ring-primary outline-none text-center"
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="text-xs opacity-50 text-right mt-2">Fecha generada automáticamente.</div>
-                                </div>
-                            )}
-
-                            {/* PDF Specific: Paper Size (Always visible if Title Block enabled or PDF) */}
-                            {(exportConfig.format === 'pdf' || exportConfig.includeTitleBlock) && (
                                 <div>
-                                    <label className="block text-sm font-bold mb-3 opacity-80">
-                                        {exportConfig.format === 'pdf' ? 'Tamaño de Papel' : 'Tamaño de Hoja / Resolución'}
-                                    </label>
-                                    <div className="grid grid-cols-3 gap-3">
-                                        {(['Letter', 'Legal', 'A4'] as const).map(size => (
-                                            <button
-                                                key={size}
-                                                onClick={() => setExportConfig(prev => ({...prev, paperSize: size}))}
-                                                className={`p-2 rounded-lg border text-sm font-medium transition-all ${
-                                                    exportConfig.paperSize === size
-                                                    ? 'bg-primary/10 border-primary text-primary'
-                                                    : 'bg-base-200 dark:bg-dark-base-200 border-transparent opacity-70 hover:opacity-100'
-                                                }`}
-                                            >
-                                                {size === 'Letter' ? 'Carta' : size === 'Legal' ? 'Oficio' : size}
-                                            </button>
-                                        ))}
-                                    </div>
+                                    <label className="block text-xs font-semibold opacity-70 mb-2">Tamaño de Papel</label>
+                                    <select 
+                                        value={exportConfig.paperSize}
+                                        onChange={(e) => setExportConfig(p => ({...p, paperSize: e.target.value as any}))}
+                                        className="w-full bg-base-200 dark:bg-dark-base-200 px-3 py-2 rounded-lg text-sm"
+                                    >
+                                        <option value="A4">A4 (297 x 210 mm)</option>
+                                        <option value="Letter">Carta (279 x 216 mm)</option>
+                                        <option value="Legal">Oficio (356 x 216 mm)</option>
+                                    </select>
                                 </div>
                             )}
+                        </div>
 
-                            {/* Theme & Scope (Hidden if Title Block enabled to simplify) */}
-                            {!exportConfig.includeTitleBlock && (
-                                <div className="grid grid-cols-2 gap-6">
-                                    <div>
-                                        <label className="block text-sm font-bold mb-3 opacity-80">Tema</label>
-                                        <div className="flex flex-col gap-2">
-                                            <button
-                                                onClick={() => setExportConfig({...exportConfig, theme: 'dark'})}
-                                                className={`p-2 rounded-lg border text-sm font-medium text-left px-3 transition-all ${
-                                                    exportConfig.theme === 'dark'
-                                                    ? 'bg-primary/10 border-primary text-primary'
-                                                    : 'bg-base-200 dark:bg-dark-base-200 border-transparent opacity-70 hover:opacity-100'
-                                                }`}
-                                            >
-                                                Oscuro (Pantalla)
-                                            </button>
-                                            <button
-                                                onClick={() => setExportConfig({...exportConfig, theme: 'light'})}
-                                                className={`p-2 rounded-lg border text-sm font-medium text-left px-3 transition-all ${
-                                                    exportConfig.theme === 'light'
-                                                    ? 'bg-primary/10 border-primary text-primary'
-                                                    : 'bg-base-200 dark:bg-dark-base-200 border-transparent opacity-70 hover:opacity-100'
-                                                }`}
-                                            >
-                                                Claro (Impresión)
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-bold mb-3 opacity-80">Área</label>
-                                        <div className="flex flex-col gap-2">
-                                            <button
-                                                onClick={() => setExportConfig({...exportConfig, scope: 'extents'})}
-                                                className={`p-2 rounded-lg border text-sm font-medium text-left px-3 transition-all ${
-                                                    exportConfig.scope === 'extents'
-                                                    ? 'bg-primary/10 border-primary text-primary'
-                                                    : 'bg-base-200 dark:bg-dark-base-200 border-transparent opacity-70 hover:opacity-100'
-                                                }`}
-                                            >
-                                                Todo el dibujo
-                                            </button>
-                                            <button
-                                                onClick={() => setExportConfig({...exportConfig, scope: 'viewport'})}
-                                                className={`p-2 rounded-lg border text-sm font-medium text-left px-3 transition-all ${
-                                                    exportConfig.scope === 'viewport'
-                                                    ? 'bg-primary/10 border-primary text-primary'
-                                                    : 'bg-base-200 dark:bg-dark-base-200 border-transparent opacity-70 hover:opacity-100'
-                                                }`}
-                                            >
-                                                Vista actual
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Legibility Checkbox */}
-                            <div className="flex items-center gap-3 bg-base-200 dark:bg-dark-base-200 p-3 rounded-lg">
-                                <input 
-                                    type="checkbox" 
-                                    id="optimizeLines"
-                                    checked={exportConfig.optimizeLines}
-                                    onChange={(e) => setExportConfig({...exportConfig, optimizeLines: e.target.checked})}
-                                    className="checkbox checkbox-primary checkbox-sm"
-                                />
-                                <label htmlFor="optimizeLines" className="text-sm font-medium cursor-pointer select-none flex-grow">
-                                    Mejorar legibilidad de líneas
-                                    <span className="block text-xs opacity-60 font-normal">
-                                        Engrosa automáticamente líneas finas en dibujos grandes.
-                                    </span>
-                                </label>
-                            </div>
-
-                            <div className="text-xs opacity-50 italic">
-                                {exportConfig.format === 'pdf' 
-                                    ? 'Nota: Se abrirá el diálogo de impresión. Selecciona "Guardar como PDF".' 
-                                    : 'Nota: Las imágenes se exportan en Alta Resolución (300 DPI equiv).'}
-                            </div>
-
-                            <div className="flex gap-3 mt-6 justify-end pt-4 border-t border-base-300 dark:border-dark-base-300 sticky bottom-0 bg-base-100 dark:bg-dark-base-100 z-10 pb-2">
-                                <button 
-                                    onClick={() => setShowExportModal(false)}
-                                    className="px-4 py-2 rounded-lg hover:bg-base-200 dark:hover:bg-dark-base-200 transition-colors"
-                                >
-                                    Cancelar
-                                </button>
-                                <button 
-                                    onClick={performExport}
-                                    className="px-6 py-2 bg-primary hover:bg-primary-focus text-white rounded-lg transition-colors font-medium flex items-center gap-2 shadow-lg shadow-primary/20"
-                                >
-                                    <DownloadIcon className="w-4 h-4"/>
-                                    Exportar {exportConfig.format.toUpperCase()}
-                                </button>
-                            </div>
+                        <div className="flex justify-end gap-2">
+                            <button onClick={() => setShowExportModal(false)} className="px-4 py-2 rounded-lg hover:bg-base-200 dark:hover:bg-dark-base-300 text-sm">Cancelar</button>
+                            <button onClick={performExport} className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary-focus font-medium">
+                                {exportConfig.format === 'pdf' ? 'Generar PDF' : 'Descargar Imagen'}
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
-        </>
+
+        </header>
     );
 };
 

@@ -91,8 +91,34 @@ export interface SymbolShape extends ShapeBase {
   rotation: number;
 }
 
+export interface TitleBlockData {
+    company: string;
+    project: string;
+    title: string;
+    sheet: string;
+    revision: string;
+    scale: string;
+    drawnBy: string;
+    checkedBy: string;
+    date: string;
+}
+
+export interface TitleBlock extends ShapeBase {
+    type: 'title_block';
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    data: TitleBlockData;
+    rotation?: number;
+    // Typography properties
+    fontScale?: number;      // Multiplier for default font size (default 1.0)
+    letterSpacing?: number;  // Pixels (default 0)
+    lineSpacing?: number;    // Multiplier for vertical gap between Label and Value (default 1.0)
+}
+
 // A union of all possible shapes
-export type AnyShape = Line | Rectangle | Circle | Dimension | Text | SymbolShape;
+export type AnyShape = Line | Rectangle | Circle | Dimension | Text | SymbolShape | TitleBlock;
 
 // A type for property updates.
 export type AnyShapePropertyUpdates = {
@@ -118,10 +144,14 @@ export type AnyShapePropertyUpdates = {
     size?: number;
     rotation?: number;
     subType?: 'linear' | 'radial' | 'diameter';
+    data?: Partial<TitleBlockData>;
+    fontScale?: number;
+    letterSpacing?: number;
+    lineSpacing?: number;
 };
 
 // Tool definitions
-export type Tool = 'select' | 'pan' | 'line' | 'rectangle' | 'circle' | 'arc' | 'dimension' | 'copy-area' | 'paste' | 'trim' | 'extend' | 'rotate' | 'text' | 'move' | 'arrow_symbol' | 'warning_symbol' | 'icon' | 'icon_door' | 'icon_window' | 'icon_extinguisher' | 'icon_emergency_exit' | 'icon_first_aid' | 'icon_restroom' | 'icon_trailer' | 'icon_hydrant' | 'icon_forklift' | 'icon_pallet' | 'icon_rack' | 'icon_conveyor' | 'icon_container';
+export type Tool = 'select' | 'pan' | 'line' | 'rectangle' | 'circle' | 'arc' | 'dimension' | 'copy-area' | 'paste' | 'trim' | 'extend' | 'rotate' | 'text' | 'move' | 'title_block' | 'arrow_symbol' | 'warning_symbol' | 'icon' | 'icon_door' | 'icon_window' | 'icon_extinguisher' | 'icon_emergency_exit' | 'icon_first_aid' | 'icon_restroom' | 'icon_trailer' | 'icon_hydrant' | 'icon_forklift' | 'icon_pallet' | 'icon_rack' | 'icon_conveyor' | 'icon_container';
 
 // Snap mode definitions
 export type SnapMode = 'grid' | 'endpoints' | 'midpoints' | 'centers' | 'inference';

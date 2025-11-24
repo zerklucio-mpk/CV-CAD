@@ -20,7 +20,7 @@ const validateUpdates = (updates: AnyShapePropertyUpdates): AnyShapePropertyUpda
             if (p && isValidNumber(p.x) && isValidNumber(p.y)) {
                 (safeUpdates as any)[key] = value;
             }
-        } else if (key === 'properties' || key === 'content' || key === 'name' || key === 'subType' || key === 'textOverride') {
+        } else if (key === 'properties' || key === 'content' || key === 'name' || key === 'subType' || key === 'textOverride' || key === 'data') {
             (safeUpdates as any)[key] = value;
         } else if (typeof value === 'number') {
             if (isValidNumber(value)) {
@@ -168,6 +168,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 Object.entries(safeUpdates).forEach(([key, value]) => {
                     if (key === 'properties' && value && typeof value === 'object') {
                         updatedShape.properties = { ...updatedShape.properties, ...value };
+                    } else if (key === 'data' && value && typeof value === 'object') {
+                        // Merge nested data for title blocks
+                        (updatedShape as any).data = { ...(updatedShape as any).data, ...value };
                     } else if (value !== undefined) {
                         (updatedShape as any)[key] = value;
                     }

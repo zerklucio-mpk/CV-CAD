@@ -1,8 +1,4 @@
 
-
-
-
-
 import React, { useMemo, useState } from 'react';
 import { useAppContext } from '../hooks/useAppContext';
 import { Tool } from '../types';
@@ -11,7 +7,7 @@ import {
     DimensionIcon, HandIcon, CopyIcon, PasteIcon, CutIcon, TextIcon, MoveIcon, 
     StarIcon, ExtinguisherIcon, EmergencyExitIcon, FirstAidIcon, RestroomIcon,
     TrailerIcon, HydrantIcon, ExtendIcon, RotateCwIcon, ForkliftIcon, PalletIcon, RackIcon, ConveyorIcon, ContainerIcon,
-    DoorIcon, WindowIcon, ArcIcon
+    DoorIcon, WindowIcon, ArcIcon, LayoutIcon
 } from './Icon';
 
 interface ToolButtonProps {
@@ -96,6 +92,7 @@ const Toolbar: React.FC = () => {
             <ToolButton label="Arco" tool="arc" icon={<ArcIcon className="w-6 h-6" />} />
             
             <ToolButton label="Texto" tool="text" icon={<TextIcon className="w-6 h-6" />} />
+            <ToolButton label="Cajetín" tool="title_block" icon={<LayoutIcon className="w-6 h-6" />} />
             
             {/* Icon Button with Popup Window */}
             <div className="w-full relative">

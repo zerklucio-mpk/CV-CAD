@@ -125,7 +125,7 @@ const AIAssistant: React.FC = () => {
                     {/* Header */}
                     <div className="bg-gradient-to-r from-primary to-primary-focus p-4 flex items-center gap-2 text-primary-content">
                         <SparklesIcon className="w-5 h-5" />
-                        <h3 className="font-bold">Gemini CAD Assistant</h3>
+                        <h3 className="font-bold">PMC CAD Assistant</h3>
                     </div>
 
                     {/* Messages Area */}

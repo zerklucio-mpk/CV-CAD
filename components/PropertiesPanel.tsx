@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAppContext } from '../hooks/useAppContext';
-import { AnyShape, Circle, Line, Rectangle, DrawingProperties, AnyShapePropertyUpdates, Point, Dimension, Unit, Text, SymbolShape, LineType } from '../types';
+import { AnyShape, Circle, Line, Rectangle, DrawingProperties, AnyShapePropertyUpdates, Point, Dimension, Unit, Text, SymbolShape, LineType, TitleBlock } from '../types';
 import { TrashIcon } from './Icon';
 
 const getUnitConversion = (unit: Unit) => {
@@ -279,6 +279,38 @@ const PropertiesPanel: React.FC = () => {
                         <NumberInput label={`Posición Y (${unit})`} value={+(shape.y / conversionFactor).toFixed(2)} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ y: v * conversionFactor })} />
                         <NumberInput label={`Tamaño`} value={shape.size} min={5} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ size: v })} />
                         <NumberInput label="Rotación (°)" value={Math.round(shape.rotation || 0)} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ rotation: v })} />
+                    </div>
+                );
+            }
+            case 'title_block': {
+                return (
+                    <div className="space-y-2">
+                        <h4 className="font-semibold text-xs opacity-70 mt-2">Geometría</h4>
+                        <NumberInput label={`Posición X (${unit})`} value={+(shape.x / conversionFactor).toFixed(2)} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ x: v * conversionFactor })} />
+                        <NumberInput label={`Posición Y (${unit})`} value={+(shape.y / conversionFactor).toFixed(2)} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ y: v * conversionFactor })} />
+                        <NumberInput label={`Ancho (${unit})`} value={+(shape.width / conversionFactor).toFixed(2)} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ width: v * conversionFactor })} />
+                        <NumberInput label={`Alto (${unit})`} value={+(shape.height / conversionFactor).toFixed(2)} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ height: v * conversionFactor })} />
+                        
+                        <div className="border-t border-dark-base-300 my-2 pt-2"></div>
+                        <h4 className="font-semibold text-xs opacity-70">Tipografía</h4>
+                        <NumberInput label="Escala Fuente" value={shape.fontScale || 1} step={0.1} min={0.1} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ fontScale: v })} />
+                        <NumberInput label="Espaciado Letras" value={shape.letterSpacing || 0} step={0.5} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ letterSpacing: v })} />
+                        <NumberInput label="Espaciado Líneas" value={shape.lineSpacing || 1} step={0.1} min={0.1} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ lineSpacing: v })} />
+
+                        <div className="border-t border-dark-base-300 my-2 pt-2"></div>
+                        <h4 className="font-semibold text-xs opacity-70">Datos del Proyecto</h4>
+                        
+                        <TextInput label="Empresa" value={shape.data.company} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ data: { company: v } })} />
+                        <TextInput label="Proyecto" value={shape.data.project} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ data: { project: v } })} />
+                        <TextInput label="Plano/Clave" value={shape.data.sheet} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ data: { sheet: v } })} />
+                        <div className="grid grid-cols-2 gap-2">
+                            <TextInput label="Escala" value={shape.data.scale} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ data: { scale: v } })} />
+                            <TextInput label="Revisión" value={shape.data.revision} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ data: { revision: v } })} />
+                        </div>
+                         <div className="grid grid-cols-2 gap-2">
+                            <TextInput label="Realizó" value={shape.data.drawnBy} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ data: { drawnBy: v } })} />
+                            <TextInput label="Revisó" value={shape.data.checkedBy} onKeyDown={handleKeyDown} onChange={v => handleShapePropertyChange({ data: { checkedBy: v } })} />
+                        </div>
                     </div>
                 );
             }
