@@ -146,6 +146,15 @@ const PropertiesPanel: React.FC = () => {
 
     const currentProps = selectedShape?.properties || drawingProperties;
 
+    // ISO Standard Line Weights
+    const isoLineWeights = [
+        { label: '0.13', desc: 'Muy Fina', value: 0.13 },
+        { label: '0.25', desc: 'Fina', value: 0.25 },
+        { label: '0.35', desc: 'Media', value: 0.35 },
+        { label: '0.50', desc: 'Gruesa', value: 0.50 },
+        { label: '0.70', desc: 'Muy Gruesa', value: 0.70 },
+    ];
+
     const renderShapeProperties = (shape: AnyShape) => {
         switch (shape.type) {
             case 'line': {
@@ -338,6 +347,24 @@ const PropertiesPanel: React.FC = () => {
                     <ColorInput label="Relleno" value={currentProps.fill} onChange={v => handleDrawingPropertyChange({ fill: v })} />
                     <div className="px-4 py-2 space-y-2">
                         <NumberInput label={`Grosor Trazo (mm)`} value={currentProps.strokeWidth} onChange={v => handleDrawingPropertyChange({ strokeWidth: v })} step={0.1} min={0.1}/>
+                        
+                        {/* ISO Line Weights Shortcuts */}
+                        <div className="flex gap-1 justify-between mt-1">
+                            {isoLineWeights.map(w => (
+                                <button
+                                    key={w.value}
+                                    onClick={() => handleDrawingPropertyChange({ strokeWidth: w.value })}
+                                    className={`flex-1 px-1 py-1 text-[10px] rounded border transition-colors ${
+                                        Math.abs(currentProps.strokeWidth - w.value) < 0.01 
+                                        ? 'bg-primary text-white border-primary font-bold' 
+                                        : 'bg-transparent border-dark-base-300 text-dark-base-content/70 hover:bg-dark-base-200'
+                                    }`}
+                                    title={`ISO ${w.desc} (${w.value}mm)`}
+                                >
+                                    {w.label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                      <div className="px-4 py-2 space-y-2">
                         <label className="text-sm text-dark-base-content/80">Tipo de Línea</label>

@@ -288,26 +288,31 @@ const getShapeSnapPoints = (shape: AnyShape): { point: Point, type: SnapMode, sh
     return points;
 };
 
-const getStrokeDashArray = (lineType: LineType | undefined): string | undefined => {
+// Calculate Dash Array based on Line Type and Stroke Width (ISO-like proportions)
+const getStrokeDashArray = (lineType: LineType | undefined, strokeWidth: number = 1): string | undefined => {
+    const w = Math.max(strokeWidth, 0.1); // Prevent zero width division
     switch (lineType) {
-        case 'dashed': return '10 5';
-        case 'dotted': return '2 4';
-        case 'dash-dot': return '10 4 2 4';
+        case 'dashed': return `${10 * w} ${5 * w}`; // Dash 10x, Gap 5x
+        case 'dotted': return `${1 * w} ${3 * w}`; // Dot 1x, Gap 3x
+        case 'dash-dot': return `${12 * w} ${3 * w} ${1 * w} ${3 * w}`; // Long Dash 12x, Gap 3x, Dot 1x, Gap 3x
         default: return undefined;
     }
 };
 
 const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected: boolean; isHighlighted?: boolean; conversionFactor: number; isPreview?: boolean; isGhost?: boolean; }> = React.memo(({ shape, isSelected, isHighlighted = false, conversionFactor, isPreview = false, isGhost = false }) => {
     const effectivelySelected = isSelected || isHighlighted;
-    
-    const strokeDasharray = effectivelySelected ? '4 2' : getStrokeDashArray(shape.properties?.lineType);
+    const strokeWidth = shape.properties?.strokeWidth || 1;
+    // For selection, use a fixed dash array. For drawing, use proportional dash array.
+    const strokeDasharray = effectivelySelected ? '4 2' : getStrokeDashArray(shape.properties?.lineType, strokeWidth);
 
     const props = {
         stroke: effectivelySelected ? '#00A8FF' : (shape.properties?.color || '#FFFFFF'),
         fill: shape.properties?.fill || 'transparent',
-        strokeWidth: shape.properties?.strokeWidth || 1,
+        strokeWidth: strokeWidth,
         strokeDasharray: strokeDasharray,
         opacity: isGhost ? 0.2 : (isPreview ? 0.7 : 1),
+        strokeLinecap: 'butt' as React.CSSProperties['strokeLinecap'],
+        strokeLinejoin: 'miter' as React.CSSProperties['strokeLinejoin']
     };
     
     if (!shape.type) return null;
@@ -392,7 +397,7 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
              const valueSize = Math.max(height * 0.11, 2) * fontScale;
              const valueYRatio = 0.3 + (0.55 * lineSpacingMult);
              const stroke = props.stroke;
-             const strokeWidth = props.strokeWidth;
+             const strokeW = props.strokeWidth;
 
              const RenderCell = ({bx, by, bw, bh, label, value, isTitle=false}: any) => (
                 <g>
@@ -403,18 +408,18 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
 
              return (
                  <g {...props}>
-                    <rect x={x} y={y} width={width} height={height} strokeWidth={strokeWidth} fill={props.fill} />
-                    <line x1={xCol2} y1={y} x2={xCol2} y2={y+height} stroke={stroke} strokeWidth={strokeWidth} />
-                    <line x1={xCol3} y1={y} x2={xCol3} y2={y+height} stroke={stroke} strokeWidth={strokeWidth} />
+                    <rect x={x} y={y} width={width} height={height} strokeWidth={strokeW} fill={props.fill} />
+                    <line x1={xCol2} y1={y} x2={xCol2} y2={y+height} stroke={stroke} strokeWidth={strokeW} />
+                    <line x1={xCol3} y1={y} x2={xCol3} y2={y+height} stroke={stroke} strokeWidth={strokeW} />
                     <text x={xCol1 + 5} y={y + 10} fill={stroke} fontSize={labelSize} fontWeight="bold" fontFamily="sans-serif" style={{letterSpacing}}>EMPRESA:</text>
                     <text x={xCol1 + (wCol1/2)} y={y + (height/2) + (valueSize/3)} textAnchor="middle" fill={stroke} fontSize={valueSize * 1.2} fontFamily="sans-serif" fontWeight="bold" style={{letterSpacing}}>{data.company}</text>
-                    <line x1={xCol2} y1={yCol2Row2} x2={xCol3} y2={yCol2Row2} stroke={stroke} strokeWidth={strokeWidth} />
-                    <line x1={xCol2} y1={yCol2Row3} x2={xCol3} y2={yCol2Row3} stroke={stroke} strokeWidth={strokeWidth} />
+                    <line x1={xCol2} y1={yCol2Row2} x2={xCol3} y2={yCol2Row2} stroke={stroke} strokeWidth={strokeW} />
+                    <line x1={xCol2} y1={yCol2Row3} x2={xCol3} y2={yCol2Row3} stroke={stroke} strokeWidth={strokeW} />
                     <RenderCell bx={xCol2} by={yCol2Row1} bw={wCol2} bh={hProject} label="PROYECTO:" value={data.project} isTitle={true} />
                     <RenderCell bx={xCol2} by={yCol2Row2} bw={wCol2} bh={hDrawn} label="REALIZÓ:" value={data.drawnBy} />
                     <RenderCell bx={xCol2} by={yCol2Row3} bw={wCol2} bh={hChecked} label="REVISÓ:" value={data.checkedBy} />
-                    <line x1={xCol3} y1={yCol3Row2} x2={x+width} y2={yCol3Row2} stroke={stroke} strokeWidth={strokeWidth} />
-                    <line x1={xCol3 + (wCol3/2)} y1={y} x2={xCol3 + (wCol3/2)} y2={y+height} stroke={stroke} strokeWidth={strokeWidth} />
+                    <line x1={xCol3} y1={yCol3Row2} x2={x+width} y2={yCol3Row2} stroke={stroke} strokeWidth={strokeW} />
+                    <line x1={xCol3 + (wCol3/2)} y1={y} x2={xCol3 + (wCol3/2)} y2={y+height} stroke={stroke} strokeWidth={strokeW} />
                     <RenderCell bx={xCol3} by={yCol3Row1} bw={wCol3/2} bh={hCol3Row} label="ESCALA:" value={data.scale} />
                     <RenderCell bx={xCol3 + wCol3/2} by={yCol3Row1} bw={wCol3/2} bh={hCol3Row} label="FECHA:" value={data.date} />
                     <RenderCell bx={xCol3} by={yCol3Row2} bw={wCol3/2} bh={hCol3Row} label="PLANO:" value={data.sheet} isTitle={true} />
@@ -474,7 +479,6 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
             );
         }
         case 'dimension': {
-             // ... Dimension code remains the same ...
              const s = shape as Partial<Dimension>;
             if (!s.p1 || !s.p2 || !s.offsetPoint) return null;
             const FONT_SIZE = s.fontSize ?? 4;
@@ -563,25 +567,8 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
              const safeSize = Number.isFinite(s.size) && s.size > 0 ? s.size : 24;
              const symbolProps = { ...props, transform: `translate(${s.x} ${s.y}) rotate(${-s.rotation || 0})` };
              const innerTransform = `scale(${safeSize / 24}) translate(-12, -12)`;
-             // ... symbol paths ... (omitted for brevity, assume same as previous)
              // Reusing the same paths as existing code
              let content = null;
-             // ... switch case logic identical to existing file ...
-             // For brevity in update, I will assume standard content here or pass through
-             // The user did not ask to change icons, so I will trust the existing render logic for content is preserved if I don't touch it.
-             // But since I am replacing the file, I must include it.
-             // Inserting minimal symbol logic to save space in XML, assume symbols render same as before
-              switch (s.name) {
-                case 'arrow': content = <path transform={innerTransform} d="M7 17l9.2-9.2M17 17V7H7" />; break;
-                // ... (Other symbols mapped same as existing)
-                case 'warning': content = (<g transform={innerTransform}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></g>); break;
-                default: content = <rect x={-10} y={-10} width={20} height={20} fill="none" stroke="red"/>; // Fallback
-            }
-             // For the sake of the user's request "Don't compromise the app", I should ideally include all symbols.
-             // However, for "Update files", I can rely on the fact that I am updating Canvas.tsx.
-             // I will paste the full symbol switch from the previous file content to be safe.
-             
-             // ... RE-INSERTING FULL SYMBOL SWITCH ...
              switch (s.name) {
                 case 'arrow': content = <path transform={innerTransform} d="M7 17l9.2-9.2M17 17V7H7" />; break;
                 case 'warning': content = (<g transform={innerTransform}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></g>); break;
@@ -621,6 +608,7 @@ type TrimGeometry =
     | { type: 'arc', cx: number, cy: number, r: number, startAngle: number, endAngle: number };
 
 const Canvas: React.FC = () => {
+    // ... Context and Refs (preserved) ...
     const {
         shapes, addShapes, addShape, activeTool, setActiveTool, drawingProperties, viewTransform,
         selectedShapeId, setSelectedShapeId, snapModes, isOrthoMode, unit,
@@ -665,6 +653,7 @@ const Canvas: React.FC = () => {
     
     const MAX_SAFE_RADIUS = 500000;
 
+    // ... Effects (preserved) ...
     useEffect(() => {
         if (svgRef.current) {
             const rect = svgRef.current.getBoundingClientRect();
@@ -702,9 +691,7 @@ const Canvas: React.FC = () => {
                 }
                 return;
             }
-             // ... keydown logic (omitted) ...
              if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName || '')) return;
-             // Basic arrow nudge support
              const selectedIds = highlightedShapeIds.size > 0 ? Array.from(highlightedShapeIds) : (selectedShapeId ? [selectedShapeId] : []);
             if (selectedIds.length > 0) {
                 const step = e.shiftKey ? 10 : 1;
@@ -857,17 +844,13 @@ const Canvas: React.FC = () => {
                 }
             }
         } else if (targetShape.type === 'circle') {
-             // Basic arc trim implementation (simplified for reliability)
-             // ... For brevity, assume lines are main focus, but support arc cutting would be similar structure
-             // Using simple Arc logic: if mouse is on arc, delete it?
-             // Implementing full Arc-Arc intersection is complex. Let's stick to full delete for Arcs if complex
-             // OR implement basic 2-point splitting.
              return { type: 'arc', cx: targetShape.cx, cy: targetShape.cy, r: targetShape.r, startAngle: targetShape.startAngle||0, endAngle: targetShape.endAngle||360 } as TrimGeometry;
         }
         return null;
     };
 
 
+    // ... Event Handlers (PointerDown, PointerMove, PointerUp, Wheel) - Preserving logic ...
     const handlePointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { }
         isInteractingRef.current = true;
@@ -886,7 +869,6 @@ const Canvas: React.FC = () => {
         }
 
         if (activeTool === 'select') {
-             // ... Select Tool Logic (preserved) ...
             if (selectedShapeId && !e.shiftKey) {
                 const selectedShape = shapes.find(s => s.id === selectedShapeId);
                 if (selectedShape) {
@@ -919,36 +901,16 @@ const Canvas: React.FC = () => {
                   const tMax = geometry.tMax;
                   const shapesToAdd: Omit<Line, 'id'>[] = [];
                   const vec = subtract(originalShape.p2, originalShape.p1);
-
-                  // Keep Left Side
-                  if (tMin > 0.001) {
-                      shapesToAdd.push({
-                          ...originalShape,
-                          p1: originalShape.p1,
-                          p2: add(originalShape.p1, scale(vec, tMin))
-                      });
-                  }
-                  // Keep Right Side
-                  if (tMax < 0.999) {
-                       shapesToAdd.push({
-                           ...originalShape,
-                           p1: add(originalShape.p1, scale(vec, tMax)),
-                           p2: originalShape.p2
-                       });
-                  }
-                  
+                  if (tMin > 0.001) { shapesToAdd.push({ ...originalShape, p1: originalShape.p1, p2: add(originalShape.p1, scale(vec, tMin)) }); }
+                  if (tMax < 0.999) { shapesToAdd.push({ ...originalShape, p1: add(originalShape.p1, scale(vec, tMax)), p2: originalShape.p2 }); }
                   replaceShapes([shapeId], shapesToAdd);
                   setHoveredTrimSegment(null);
              } else if (originalShape) {
-                  // Fallback delete for non-segmented shapes
-                  deleteShape(shapeId);
-                  setHoveredTrimSegment(null);
+                  deleteShape(shapeId); setHoveredTrimSegment(null);
              }
              return;
         }
 
-        // ... (Other tools: Arc, Rotate, Move, Extend, Paste, Copy, Dim, Text, etc. - PRESERVED) ...
-        // Inserting only necessary structure to keep file valid.
         if (activeTool === 'arc') {
              if (arcStep === 0) { setArcPoints([snapPos]); setArcStep(1); setCurrentShape(null); } 
              else if (arcStep === 1) { setArcPoints(prev => [...prev, snapPos]); setArcStep(2); } 
@@ -1115,7 +1077,7 @@ const Canvas: React.FC = () => {
             } else { return; }
         }
 
-        // --- UPDATED TRIM LOGIC ---
+        // ... Trim and Extend logic (preserved) ...
         if (activeTool === 'trim') {
              const tolerance = 10 / viewTransform.scale;
              const hitId = getHitTest(worldPos, tolerance);
@@ -1124,16 +1086,10 @@ const Canvas: React.FC = () => {
                   if (targetShape) {
                        const seg = calculateTrimSegments(targetShape, worldPos);
                        if (seg) setHoveredTrimSegment({ shapeId: hitId, geometry: seg });
-                       else {
-                           // Fallback for simple shapes
-                           if (targetShape.type === 'circle') setHoveredTrimSegment({ shapeId: hitId, geometry: { type: 'arc', cx: targetShape.cx, cy: targetShape.cy, r: targetShape.r, startAngle: targetShape.startAngle||0, endAngle: targetShape.endAngle||360 }});
-                       }
+                       else { if (targetShape.type === 'circle') setHoveredTrimSegment({ shapeId: hitId, geometry: { type: 'arc', cx: targetShape.cx, cy: targetShape.cy, r: targetShape.r, startAngle: targetShape.startAngle||0, endAngle: targetShape.endAngle||360 }}); }
                   }
-             } else {
-                 setHoveredTrimSegment(null);
-             }
+             } else { setHoveredTrimSegment(null); }
         }
-
         if (activeTool === 'extend') {
             const tolerance = 10 / viewTransform.scale;
             const hitId = getHitTest(worldPos, tolerance);
@@ -1224,7 +1180,7 @@ const Canvas: React.FC = () => {
         }
 
         if (draggingHandle) {
-            const { shapeId, handleIndex, originalShape } = draggingHandle;
+             const { shapeId, handleIndex, originalShape } = draggingHandle;
             if (handleIndex === 'rotate') return;
             if (handleIndex === 'move' && dragStartPos) { return; }
             if (typeof handleIndex !== 'number') return;
@@ -1249,11 +1205,7 @@ const Canvas: React.FC = () => {
                 }
             } else if (previewShape.type === 'symbol') {
                 if (handleIndex === 0) { updates.x = finalPos.x; updates.y = finalPos.y; } 
-                else {
-                    const center = { x: (originalShape as SymbolShape).x, y: (originalShape as SymbolShape).y };
-                    const dist = distance(center, finalPos); const newSize = dist * Math.sqrt(2);
-                    if (Number.isFinite(newSize) && newSize > 0) updates.size = Math.max(5, newSize);
-                }
+                else { const center = { x: (originalShape as SymbolShape).x, y: (originalShape as SymbolShape).y }; const dist = distance(center, finalPos); const newSize = dist * Math.sqrt(2); if (Number.isFinite(newSize) && newSize > 0) updates.size = Math.max(5, newSize); }
             }
             if (Object.keys(updates).length > 0) { Object.assign(previewShape, updates); setDraggingHandle(prev => prev ? ({ ...prev, currentPreview: previewShape }) : null); }
             return;
@@ -1264,12 +1216,8 @@ const Canvas: React.FC = () => {
             else if (activeTool === 'select' && selectionRect) { setSelectionRect({ ...selectionRect, width: worldPos.x - selectionRect.x, height: worldPos.y - selectionRect.y }); } 
             else if (currentShape) {
                  if(currentShape.type === 'line') { const constrained = applyConstraints(currentShape.p1!, finalPos, e.shiftKey); setCurrentShape({ ...currentShape, p2: constrained }); }
-                 else if (currentShape.type === 'rectangle') {
-                      const start = {x: currentShape.x!, y: currentShape.y!};
-                      let w = finalPos.x - start.x; let h = finalPos.y - start.y;
-                      if(e.shiftKey) { const max = Math.max(Math.abs(w), Math.abs(h)); w = w<0?-max:max; h = h<0?-max:max; }
-                      setCurrentShape({ ...currentShape, width: w, height: h });
-                 } else if (currentShape.type === 'circle' && activeTool === 'circle') { setCurrentShape({ ...currentShape, r: distance({x: currentShape.cx!, y: currentShape.cy!}, finalPos) }); }
+                 else if (currentShape.type === 'rectangle') { const start = {x: currentShape.x!, y: currentShape.y!}; let w = finalPos.x - start.x; let h = finalPos.y - start.y; if(e.shiftKey) { const max = Math.max(Math.abs(w), Math.abs(h)); w = w<0?-max:max; h = h<0?-max:max; } setCurrentShape({ ...currentShape, width: w, height: h }); } 
+                 else if (currentShape.type === 'circle' && activeTool === 'circle') { setCurrentShape({ ...currentShape, r: distance({x: currentShape.cx!, y: currentShape.cy!}, finalPos) }); }
             }
         }
     };
@@ -1279,10 +1227,7 @@ const Canvas: React.FC = () => {
         switch (shape.type) {
             case 'line': return isPointInBounds(shape.p1) && isPointInBounds(shape.p2);
             case 'rectangle':
-            case 'title_block': {
-                const corners = [ { x: shape.x, y: shape.y }, { x: shape.x + shape.width, y: shape.y }, { x: shape.x, y: shape.y + shape.height }, { x: shape.x + shape.width, y: shape.y + shape.height }, ];
-                return corners.every(isPointInBounds);
-            }
+            case 'title_block': { const corners = [ { x: shape.x, y: shape.y }, { x: shape.x + shape.width, y: shape.y }, { x: shape.x, y: shape.y + shape.height }, { x: shape.x + shape.width, y: shape.y + shape.height }, ]; return corners.every(isPointInBounds); }
             case 'circle': { return isPointInBounds({x: shape.cx, y: shape.cy}); }
             case 'dimension': return isPointInBounds(shape.p1) && isPointInBounds(shape.p2);
             case 'text': return isPointInBounds({x: shape.x, y: shape.y});
@@ -1291,7 +1236,7 @@ const Canvas: React.FC = () => {
         }
     };
     
-    // ... handlePointerUp and handleWheel (kept largely same, just ensuring closing bracket validity)
+    // ... PointerUp & Wheel (preserved) ...
     const handlePointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
         try { if (e.currentTarget && e.currentTarget.hasPointerCapture && e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) { }
         if (draggingHandle?.handleIndex === 'move' && dragStartPos) {
@@ -1304,8 +1249,7 @@ const Canvas: React.FC = () => {
                 const { groupOriginals, shapeId, originalShape } = draggingHandle;
                 const itemsToMove: [string, AnyShape][] = groupOriginals ? Object.entries(groupOriginals) : [[shapeId, originalShape]];
                 itemsToMove.forEach(([id, origShape]) => {
-                     const s = origShape as AnyShape; 
-                     const updates: AnyShapePropertyUpdates = {};
+                     const s = origShape as AnyShape; const updates: AnyShapePropertyUpdates = {};
                      if (s.type === 'line' || s.type === 'dimension') { updates.p1 = add(s.p1, delta); updates.p2 = add(s.p2, delta); if(s.type === 'dimension') updates.offsetPoint = add(s.offsetPoint, delta); } 
                      else if (s.type === 'rectangle' || s.type === 'text' || s.type === 'symbol' || s.type === 'title_block') { updates.x = s.x + delta.x; updates.y = s.y + delta.y; } 
                      else if (s.type === 'circle') { updates.cx = s.cx + delta.x; updates.cy = s.cy + delta.y; }
@@ -1314,33 +1258,21 @@ const Canvas: React.FC = () => {
             }
         }
         if (draggingHandle?.currentPreview && typeof draggingHandle.handleIndex === 'number') {
-             const { currentPreview, shapeId } = draggingHandle;
-             const updates: AnyShapePropertyUpdates = {};
+             const { currentPreview, shapeId } = draggingHandle; const updates: AnyShapePropertyUpdates = {};
              if(currentPreview.type === 'line' || currentPreview.type === 'dimension') { updates.p1 = currentPreview.p1; updates.p2 = currentPreview.p2; if(currentPreview.type === 'dimension') updates.offsetPoint = currentPreview.offsetPoint; } 
              else if (currentPreview.type === 'rectangle' || currentPreview.type === 'title_block' || currentPreview.type === 'symbol' || currentPreview.type === 'text') { updates.x = currentPreview.x; updates.y = currentPreview.y; if('width' in currentPreview) { updates.width = currentPreview.width; updates.height = currentPreview.height; } if('size' in currentPreview) updates.size = currentPreview.size; } 
              else if (currentPreview.type === 'circle') { updates.cx = currentPreview.cx; updates.cy = currentPreview.cy; updates.r = currentPreview.r; }
              updateShape(shapeId, updates);
         }
         if (activeTool === 'select' && dragStartScreenPos && !draggingHandle && !selectionRect) {
-             const startWorld = screenToWorld(dragStartScreenPos);
-             const hitId = getHitTest(startWorld, 5 / viewTransform.scale);
-             if (hitId) {
-                 if (e.shiftKey) { const newSet = new Set(highlightedShapeIds); if (newSet.has(hitId)) newSet.delete(hitId); else newSet.add(hitId); setHighlightedShapeIds(newSet); if (newSet.size === 1) setSelectedShapeId(Array.from(newSet)[0]); } 
-                 else { setSelectedShapeId(hitId); setHighlightedShapeIds(new Set([hitId])); }
-             } else { setSelectedShapeId(null); setHighlightedShapeIds(new Set()); }
+             const startWorld = screenToWorld(dragStartScreenPos); const hitId = getHitTest(startWorld, 5 / viewTransform.scale);
+             if (hitId) { if (e.shiftKey) { const newSet = new Set(highlightedShapeIds); if (newSet.has(hitId)) newSet.delete(hitId); else newSet.add(hitId); setHighlightedShapeIds(newSet); if (newSet.size === 1) setSelectedShapeId(Array.from(newSet)[0]); } else { setSelectedShapeId(hitId); setHighlightedShapeIds(new Set([hitId])); } } else { setSelectedShapeId(null); setHighlightedShapeIds(new Set()); }
         }
         if (activeTool === 'move' && moveBasePoint) return;
         if (activeTool === 'arc' && arcStep > 0) return;
         if ((activeTool === 'rotate' || draggingHandle?.handleIndex === 'rotate') && rotateState && selectedShapeId) {
-             const currentAngle = angle(subtract(worldMousePos, rotateState.center));
-             const deltaAngle = currentAngle - rotateState.startAngle;
-             const shape = shapes.find(s => s.id === selectedShapeId);
-             if (shape) {
-                 const updates: AnyShapePropertyUpdates = {};
-                 if (shape.type === 'rectangle' || shape.type === 'symbol' || shape.type === 'text') { updates.rotation = (rotateState.initialRotation + deltaAngle) % 360; } 
-                 else if ((shape.type === 'line' || shape.type === 'dimension') && rotateState.originalShape) { const orig = rotateState.originalShape as (Line | Dimension); const rotateP = (p: Point) => rotatePoint(p, rotateState.center, deltaAngle); updates.p1 = rotateP(orig.p1); updates.p2 = rotateP(orig.p2); if (shape.type === 'dimension' && 'offsetPoint' in orig) updates.offsetPoint = rotateP((orig as Dimension).offsetPoint); }
-                 if (Object.keys(updates).length > 0) updateShape(selectedShapeId, updates);
-             }
+             const currentAngle = angle(subtract(worldMousePos, rotateState.center)); const deltaAngle = currentAngle - rotateState.startAngle; const shape = shapes.find(s => s.id === selectedShapeId);
+             if (shape) { const updates: AnyShapePropertyUpdates = {}; if (shape.type === 'rectangle' || shape.type === 'symbol' || shape.type === 'text') { updates.rotation = (rotateState.initialRotation + deltaAngle) % 360; } else if ((shape.type === 'line' || shape.type === 'dimension') && rotateState.originalShape) { const orig = rotateState.originalShape as (Line | Dimension); const rotateP = (p: Point) => rotatePoint(p, rotateState.center, deltaAngle); updates.p1 = rotateP(orig.p1); updates.p2 = rotateP(orig.p2); if (shape.type === 'dimension' && 'offsetPoint' in orig) updates.offsetPoint = rotateP((orig as Dimension).offsetPoint); } if (Object.keys(updates).length > 0) updateShape(selectedShapeId, updates); }
              setRotateState(null); if (draggingHandle?.handleIndex === 'rotate') setDraggingHandle(null); return;
         }
         if (activeTool === 'dimension' && dimensionStep === 2) return;
@@ -1348,20 +1280,14 @@ const Canvas: React.FC = () => {
              const normalizedRect = { x: selectionRect.width < 0 ? selectionRect.x + selectionRect.width : selectionRect.x, y: selectionRect.height < 0 ? selectionRect.y + selectionRect.height : selectionRect.y, width: Math.abs(selectionRect.width), height: Math.abs(selectionRect.height) };
             if (normalizedRect.width > 1 && normalizedRect.height > 1) {
                 const shapesToProcess = shapes.filter(s => isShapeInBounds(s, normalizedRect as Rectangle));
-                if (shapesToProcess.length > 0) {
-                    if (activeTool === 'copy-area') { setClipboard({ shapes: shapesToProcess, origin: { x: normalizedRect.x + normalizedRect.width / 2, y: normalizedRect.y + normalizedRect.height / 2 } }); setHighlightedShapeIds(new Set(shapesToProcess.map(s => s.id))); } 
-                    else { setHighlightedShapeIds(new Set(shapesToProcess.map(s => s.id))); if(shapesToProcess.length === 1) setSelectedShapeId(shapesToProcess[0].id); }
-                }
+                if (shapesToProcess.length > 0) { if (activeTool === 'copy-area') { setClipboard({ shapes: shapesToProcess, origin: { x: normalizedRect.x + normalizedRect.width / 2, y: normalizedRect.y + normalizedRect.height / 2 } }); setHighlightedShapeIds(new Set(shapesToProcess.map(s => s.id))); } else { setHighlightedShapeIds(new Set(shapesToProcess.map(s => s.id))); if(shapesToProcess.length === 1) setSelectedShapeId(shapesToProcess[0].id); } }
             } else if (activeTool === 'select' && !dragStartScreenPos) { setSelectedShapeId(null); setHighlightedShapeIds(new Set()); }
             setSelectionRect(null); if (activeTool === 'copy-area') setActiveTool('select');
         }
         isInteractingRef.current = false; setPanStart(null); setDraggingHandle(null); setDragStartPos(null); setDragStartScreenPos(null);
         if (currentShape && activeTool !== 'dimension') {
             if (currentShape.type === 'line' && distance(currentShape.p1!, currentShape.p2!) > 0.1) addShape(currentShape as Omit<Line, 'id'>);
-            else if (currentShape.type === 'rectangle' && currentShape.width! !== 0 && currentShape.height! !== 0) {
-                 const newRect: Omit<Rectangle, 'id'> = { type: 'rectangle', x: currentShape.width! < 0 ? currentShape.x! + currentShape.width! : currentShape.x!, y: currentShape.height! < 0 ? currentShape.y! + currentShape.height! : currentShape.y!, width: Math.abs(currentShape.width!), height: Math.abs(currentShape.height!), properties: currentShape.properties as DrawingProperties, rotation: 0 };
-                 addShape(newRect);
-            } else if (currentShape.type === 'circle' && currentShape.r! > 0.1) addShape(currentShape as Omit<Circle, 'id'>);
+            else if (currentShape.type === 'rectangle' && currentShape.width! !== 0 && currentShape.height! !== 0) { const newRect: Omit<Rectangle, 'id'> = { type: 'rectangle', x: currentShape.width! < 0 ? currentShape.x! + currentShape.width! : currentShape.x!, y: currentShape.height! < 0 ? currentShape.y! + currentShape.height! : currentShape.y!, width: Math.abs(currentShape.width!), height: Math.abs(currentShape.height!), properties: currentShape.properties as DrawingProperties, rotation: 0 }; addShape(newRect); } else if (currentShape.type === 'circle' && currentShape.r! > 0.1) addShape(currentShape as Omit<Circle, 'id'>);
         }
         if (activeTool !== 'dimension' || dimensionStep !== 2) setCurrentShape(null);
     };
@@ -1437,7 +1363,7 @@ const Canvas: React.FC = () => {
 
                     {activeSnapPoint && ( <g> <circle cx={activeSnapPoint.point.x} cy={activeSnapPoint.point.y} r={8 / viewTransform.scale} fill="magenta" fillOpacity="0.7"/> <circle cx={activeSnapPoint.point.x} cy={activeSnapPoint.point.y} r={1.5 / viewTransform.scale} fill="white"/> </g> )}
                     
-                    {inferenceLines.map((line, i) => ( <g key={i}> <line x1={line.p1.x} y1={line.p1.y} x2={line.p2.x} y2={line.p2.y} stroke="lime" strokeWidth={1 / viewTransform.scale} strokeDasharray={`${4/viewTransform.scale}`} opacity="0.8" /> <line x1={line.p1.x - 3/viewTransform.scale} y1={line.p1.y} x2={line.p1.x + 3/viewTransform.scale} y2={line.p1.y} stroke="lime" strokeWidth={1/viewTransform.scale} /> <line x1={line.p1.x} y1={line.p1.y - 3/viewTransform.scale} x2={line.p1.x} y2={line.p1.y + 3/viewTransform.scale} stroke="lime" strokeWidth={1/viewTransform.scale} /> </g> ))}
+                    {inferenceLines.map((line, i) => ( <g key={i}> <line x1={line.p1.x} y1={line.p1.y} x2={line.p2.x} y2={line.p2.y} stroke="lime" strokeWidth={1 / viewTransform.scale} strokeDasharray={`${5/viewTransform.scale} ${5/viewTransform.scale}`} opacity="0.8" /> <line x1={line.p1.x - 3/viewTransform.scale} y1={line.p1.y} x2={line.p1.x + 3/viewTransform.scale} y2={line.p1.y} stroke="lime" strokeWidth={1/viewTransform.scale} /> <line x1={line.p1.x} y1={line.p1.y - 3/viewTransform.scale} x2={line.p1.x} y2={line.p1.y + 3/viewTransform.scale} stroke="lime" strokeWidth={1/viewTransform.scale} /> </g> ))}
 
                     {selectionRect && (() => {
                          const rX = selectionRect.width < 0 ? selectionRect.x + selectionRect.width : selectionRect.x;
@@ -1453,9 +1379,7 @@ const Canvas: React.FC = () => {
                              return ( <g> <line key="trim-hover" x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="red" strokeWidth={4 / viewTransform.scale} strokeLinecap="round" opacity="0.7" /> <line x1={midX - s} y1={midY - s} x2={midX + s} y2={midY + s} stroke="white" strokeWidth={2 / viewTransform.scale} /> <line x1={midX + s} y1={midY - s} x2={midX - s} y2={midY + s} stroke="white" strokeWidth={2 / viewTransform.scale} /> </g> );
                          } else {
                              const { cx, cy, r, startAngle, endAngle } = geometry;
-                             const effectiveStart = startAngle; let effectiveEnd = endAngle; if (endAngle < startAngle) effectiveEnd += 360;
-                             const midRad = ((effectiveStart + effectiveEnd) / 2) * Math.PI / 180; const midX = cx + r * Math.cos(midRad); const midY = cy - r * Math.sin(midRad); 
-                             return ( <g> <path d={describeArc(cx, cy, r, startAngle, endAngle)} stroke="red" strokeWidth={4 / viewTransform.scale} fill="none" opacity="0.7" /> <line x1={midX - s} y1={midY - s} x2={midX + s} y2={midY + s} stroke="white" strokeWidth={2 / viewTransform.scale} /> <line x1={midX + s} y1={midY - s} x2={midX - s} y2={midY + s} stroke="white" strokeWidth={2 / viewTransform.scale} /> </g> )
+                             return ( <g> <path d={describeArc(cx, cy, r, startAngle, endAngle)} stroke="red" strokeWidth={4 / viewTransform.scale} fill="none" opacity="0.7" /> </g> )
                          }
                     })()}
 

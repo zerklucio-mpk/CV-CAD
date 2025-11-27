@@ -37,11 +37,12 @@ const escapeXml = (unsafe: string | null | undefined) => {
 };
 
 // Helper for stroke dash array export
-const getStrokeDashArray = (lineType: LineType | undefined): string => {
+const getStrokeDashArray = (lineType: LineType | undefined, strokeWidth: number): string => {
+    const w = Math.max(strokeWidth, 0.1);
     switch (lineType) {
-        case 'dashed': return 'stroke-dasharray="10 5"';
-        case 'dotted': return 'stroke-dasharray="2 4"';
-        case 'dash-dot': return 'stroke-dasharray="10 4 2 4"';
+        case 'dashed': return `stroke-dasharray="${10 * w} ${5 * w}"`;
+        case 'dotted': return `stroke-dasharray="${1 * w} ${3 * w}"`;
+        case 'dash-dot': return `stroke-dasharray="${12 * w} ${3 * w} ${1 * w} ${3 * w}"`;
         default: return '';
     }
 };
@@ -434,13 +435,14 @@ const Header: React.FC = () => {
             }
 
             const fill = s.properties.fill !== 'transparent' ? s.properties.fill : 'none';
-            const dashArray = getStrokeDashArray(s.properties.lineType);
+            // Pass strokeWidth to dash array calculation for ISO scaling
+            const dashArray = getStrokeDashArray(s.properties.lineType, strokeWidth);
 
             if (s.type === 'line') {
-                svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" ${dashArray} />`;
+                svgContent += `<line x1="${s.p1.x}" y1="${s.p1.y}" x2="${s.p2.x}" y2="${s.p2.y}" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="butt" stroke-linejoin="miter" ${dashArray} />`;
             } else if (s.type === 'rectangle') {
                 const transform = s.rotation ? `rotate(${-s.rotation}, ${s.x + s.width/2}, ${s.y + s.height/2})` : '';
-                svgContent += `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" stroke="${color}" stroke-width="${strokeWidth}" fill="${fill}" transform="${transform}" ${dashArray} />`;
+                svgContent += `<rect x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" stroke="${color}" stroke-width="${strokeWidth}" stroke-linejoin="miter" fill="${fill}" transform="${transform}" ${dashArray} />`;
             } else if (s.type === 'title_block') {
                  // Manual Title Block Rendering - Sync with Canvas.tsx Layout
                  const { x, y, width, height, data } = s;
@@ -527,7 +529,7 @@ const Header: React.FC = () => {
             } else if (s.type === 'circle') {
                 if (s.startAngle !== undefined && s.endAngle !== undefined && Math.abs(s.endAngle - s.startAngle) < 359.9) {
                     const d = describeArc(s.cx, s.cy, s.r, s.startAngle, s.endAngle);
-                    svgContent += `<path d="${d}" stroke="${color}" stroke-width="${strokeWidth}" fill="none" ${dashArray} />`;
+                    svgContent += `<path d="${d}" stroke="${color}" stroke-width="${strokeWidth}" fill="none" stroke-linecap="butt" stroke-linejoin="miter" ${dashArray} />`;
                 } else {
                     svgContent += `<circle cx="${s.cx}" cy="${s.cy}" r="${s.r}" stroke="${color}" stroke-width="${strokeWidth}" fill="${fill}" ${dashArray} />`;
                 }
@@ -546,7 +548,7 @@ const Header: React.FC = () => {
                 // Scale inner strokes relative to symbol size
                 const innerStroke = Math.max(1, symStroke * (24/size));
 
-                const getStrokeProps = () => `stroke="${color}" stroke-width="${innerStroke}" fill="none" stroke-linecap="round" stroke-linejoin="round" ${dashArray}`;
+                const getStrokeProps = () => `stroke="${color}" stroke-width="${innerStroke}" fill="none" stroke-linecap="butt" stroke-linejoin="miter" ${dashArray}`;
                 
                 let innerPath = '';
                  switch (s.name) {
