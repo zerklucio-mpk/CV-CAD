@@ -26,8 +26,6 @@ const validateUpdates = (updates: AnyShapePropertyUpdates): AnyShapePropertyUpda
             if (isValidNumber(value)) {
                 // Strict Validation: Prevent negative dimensions causing crashes
                 if (['width', 'height', 'r', 'size'].includes(key) && value <= 0.0001) {
-                    // Skip invalid update or clamp? Let's skip to be safe against corruption
-                    // or clamp to tiny value
                     (safeUpdates as any)[key] = 0.01;
                 } else {
                     (safeUpdates as any)[key] = value;
@@ -51,12 +49,18 @@ export interface AppContextType {
     addShape: (shape: Omit<AnyShape, 'id'>) => void;
     addShapes: (shapes: Omit<AnyShape, 'id'>[]) => void;
     updateShape: (id: string, updates: AnyShapePropertyUpdates) => void;
+    updateShapes: (batchUpdates: { id: string, updates: AnyShapePropertyUpdates }[]) => void; // NEW BATCH METHOD
     deleteShape: (id: string) => void;
     deleteShapes: (ids: string[]) => void;
     replaceShapes: (idsToDelete: string[], shapesToAdd: Omit<AnyShape, 'id'>[]) => void;
     createNewDrawing: () => void; 
     selectedShapeId: string | null;
     setSelectedShapeId: (id: string | null) => void;
+    // Multi-selection support
+    selectedShapeIds: Set<string>;
+    setSelectedShapeIds: (ids: Set<string>) => void;
+    toggleShapeSelection: (id: string) => void;
+    
     activeTool: Tool;
     setActiveTool: (tool: Tool) => void;
     drawingProperties: DrawingProperties;
@@ -91,7 +95,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Safety fallback: Ensure shapes is always an array, even if index is out of bounds temporarily
     const shapes = history[historyIndex] || [];
 
-    const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
+    const [selectedShapeId, _setSelectedShapeId] = useState<string | null>(null);
+    const [selectedShapeIds, _setSelectedShapeIds] = useState<Set<string>>(new Set());
+
     const [activeTool, setActiveTool] = useState<Tool>('select');
     const [drawingProperties, _setDrawingProperties] = useState<DrawingProperties>({
         color: '#FFFFFF',
@@ -121,13 +127,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setHistoryIndex(prev => prev + 1);
     }, [historyIndex, shapes]);
     
+    // Smart setters for selection to keep single/multi states in sync
+    const setSelectedShapeId = useCallback((id: string | null) => {
+        _setSelectedShapeId(id);
+        if (id) {
+            _setSelectedShapeIds(new Set([id]));
+        } else {
+            _setSelectedShapeIds(new Set());
+        }
+    }, []);
+
+    const setSelectedShapeIds = useCallback((ids: Set<string>) => {
+        _setSelectedShapeIds(ids);
+        // If only one item is selected, sync it to the primary ID for properties panel compatibility
+        if (ids.size === 1) {
+            _setSelectedShapeId(Array.from(ids)[0]);
+        } else {
+            _setSelectedShapeId(null);
+        }
+    }, []);
+
+    const toggleShapeSelection = useCallback((id: string) => {
+        _setSelectedShapeIds(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(id)) {
+                newSet.delete(id);
+            } else {
+                newSet.add(id);
+            }
+            
+            // Sync single selection state
+            if (newSet.size === 1) {
+                _setSelectedShapeId(Array.from(newSet)[0]);
+            } else {
+                _setSelectedShapeId(null);
+            }
+            
+            return newSet;
+        });
+    }, []);
+
     const setDrawingProperties = useCallback((updates: Partial<DrawingProperties>) => {
         _setDrawingProperties(prev => ({...prev, ...updates}));
     }, []);
 
     const addShape = useCallback((shape: Omit<AnyShape, 'id'>) => {
         const newShape = { ...shape, id: generateId() } as AnyShape;
-        // Ensure properties exist and fallback safely
         if (!newShape.properties) {
              newShape.properties = { color: '#FFFFFF', fill: 'transparent', strokeWidth: 1, lineType: 'solid' };
         } else if (!newShape.properties.lineType) {
@@ -153,10 +198,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, [shapes, updateHistory]);
 
     const updateShape = useCallback((id: string, updates: AnyShapePropertyUpdates) => {
-        // Validate updates before applying to prevent NaN poisoning
         const safeUpdates = validateUpdates(updates);
-        
-        // If validation stripped everything (all invalid), abort
         if (Object.keys(safeUpdates).length === 0 && Object.keys(updates).length > 0 && !updates.properties) {
              return;
         }
@@ -164,12 +206,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const newShapes = shapes.map(s => {
             if (s.id === id) {
                 const updatedShape = { ...s };
-                // Handle nested properties update
                 Object.entries(safeUpdates).forEach(([key, value]) => {
                     if (key === 'properties' && value && typeof value === 'object') {
                         updatedShape.properties = { ...updatedShape.properties, ...value };
                     } else if (key === 'data' && value && typeof value === 'object') {
-                        // Merge nested data for title blocks
                         (updatedShape as any).data = { ...(updatedShape as any).data, ...value };
                     } else if (value !== undefined) {
                         (updatedShape as any)[key] = value;
@@ -182,22 +222,62 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateHistory(newShapes);
     }, [shapes, updateHistory]);
 
+    // --- CRITICAL FIX: BATCH UPDATE METHOD ---
+    // This allows updating multiple shapes in a single render cycle, preventing race conditions
+    // where iterating updates would overwrite previous updates in the loop.
+    const updateShapes = useCallback((batchUpdates: { id: string, updates: AnyShapePropertyUpdates }[]) => {
+        if (batchUpdates.length === 0) return;
+
+        // Create a map for O(1) lookup during mapping
+        const updatesMap = new Map<string, AnyShapePropertyUpdates>();
+        batchUpdates.forEach(item => {
+            updatesMap.set(item.id, validateUpdates(item.updates));
+        });
+
+        const newShapes = shapes.map(s => {
+            if (updatesMap.has(s.id)) {
+                const safeUpdates = updatesMap.get(s.id)!;
+                const updatedShape = { ...s };
+                Object.entries(safeUpdates).forEach(([key, value]) => {
+                    if (key === 'properties' && value && typeof value === 'object') {
+                        updatedShape.properties = { ...updatedShape.properties, ...value };
+                    } else if (key === 'data' && value && typeof value === 'object') {
+                        (updatedShape as any).data = { ...(updatedShape as any).data, ...value };
+                    } else if (value !== undefined) {
+                        (updatedShape as any)[key] = value;
+                    }
+                });
+                return updatedShape;
+            }
+            return s;
+        });
+        updateHistory(newShapes);
+    }, [shapes, updateHistory]);
+
+
     const deleteShape = useCallback((id: string) => {
         const newShapes = shapes.filter(s => s.id !== id);
         updateHistory(newShapes);
         if (selectedShapeId === id) {
             setSelectedShapeId(null);
         }
-    }, [shapes, updateHistory, selectedShapeId]);
+    }, [shapes, updateHistory, selectedShapeId, setSelectedShapeId]);
     
     const deleteShapes = useCallback((ids: string[]) => {
         const idsToDelete = new Set(ids);
         const newShapes = shapes.filter(s => !idsToDelete.has(s.id));
         updateHistory(newShapes);
-        if (selectedShapeId && idsToDelete.has(selectedShapeId)) {
-            setSelectedShapeId(null);
-        }
-    }, [shapes, updateHistory, selectedShapeId]);
+        
+        // Update selection states
+        _setSelectedShapeIds(prev => {
+             const newSet = new Set(prev);
+             ids.forEach(id => newSet.delete(id));
+             if (newSet.size === 1) _setSelectedShapeId(Array.from(newSet)[0]);
+             else _setSelectedShapeId(null);
+             return newSet;
+        });
+
+    }, [shapes, updateHistory]);
 
     const replaceShapes = useCallback((idsToDelete: string[], shapesToAdd: Omit<AnyShape, 'id'>[]) => {
         const deleteSet = new Set(idsToDelete);
@@ -211,7 +291,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateHistory(newShapes);
     }, [shapes, updateHistory]);
 
-    // Completely resets the drawing state
     const createNewDrawing = useCallback(() => {
         setHistory([[]]);
         setHistoryIndex(0);
@@ -222,26 +301,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const rootElement = document.getElementById('root');
         if (rootElement) {
              const rect = rootElement.getBoundingClientRect();
-             // Reset view to center
              setViewTransform({ x: rect.width / 2, y: rect.height / 2, scale: 1 });
         } else {
              setViewTransform({ x: 0, y: 0, scale: 1 });
         }
-    }, []);
+    }, [setSelectedShapeId]);
 
     const undo = useCallback(() => {
         if (canUndo) {
             setHistoryIndex(prev => prev - 1);
-            setSelectedShapeId(null); // Clear selection on undo
+            setSelectedShapeId(null);
         }
-    }, [canUndo]);
+    }, [canUndo, setSelectedShapeId]);
 
     const redo = useCallback(() => {
         if (canRedo) {
             setHistoryIndex(prev => prev + 1);
-            setSelectedShapeId(null); // Clear selection on redo
+            setSelectedShapeId(null);
         }
-    }, [canRedo]);
+    }, [canRedo, setSelectedShapeId]);
 
     const toggleSnapMode = useCallback((mode: SnapMode) => {
         setSnapModes(prev => {
@@ -264,12 +342,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addShape,
         addShapes,
         updateShape,
+        updateShapes, // Exported new method
         deleteShape,
         deleteShapes,
         replaceShapes,
         createNewDrawing,
         selectedShapeId,
         setSelectedShapeId,
+        selectedShapeIds,
+        setSelectedShapeIds,
+        toggleShapeSelection,
         activeTool,
         setActiveTool,
         drawingProperties,
@@ -292,8 +374,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setTemplateImage,
         updateTemplateImage,
     }), [
-        shapes, addShape, addShapes, updateShape, deleteShape, deleteShapes, replaceShapes, createNewDrawing, selectedShapeId, activeTool, drawingProperties, 
-        setDrawingProperties, viewTransform, unit, snapModes, toggleSnapMode, isOrthoMode, 
+        shapes, addShape, addShapes, updateShape, updateShapes, deleteShape, deleteShapes, replaceShapes, createNewDrawing, 
+        selectedShapeId, setSelectedShapeId, selectedShapeIds, setSelectedShapeIds, toggleShapeSelection,
+        activeTool, drawingProperties, setDrawingProperties, viewTransform, unit, snapModes, toggleSnapMode, isOrthoMode, 
         undo, redo, canUndo, canRedo, clipboard, templateImage, updateTemplateImage
     ]);
 

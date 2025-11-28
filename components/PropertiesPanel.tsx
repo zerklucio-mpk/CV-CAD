@@ -117,13 +117,23 @@ const ColorInput: React.FC<{ label: string; value: string; onChange: (value: str
 
 
 const PropertiesPanel: React.FC = () => {
-    const { shapes, selectedShapeId, updateShape, deleteShape, drawingProperties, setDrawingProperties, unit, setSelectedShapeId } = useAppContext();
-    const selectedShape = shapes.find(s => s.id === selectedShapeId);
+    const { shapes, selectedShapeId, selectedShapeIds, updateShape, deleteShapes, drawingProperties, setDrawingProperties, unit, setSelectedShapeIds } = useAppContext();
+    
+    // Check for single or multi selection
+    const isMultiSelection = selectedShapeIds.size > 1;
+    const selectedShape = !isMultiSelection ? shapes.find(s => s.id === selectedShapeId) : null;
+    
+    // For multi selection, we only allow changing common properties
+    const multiSelectionCount = selectedShapeIds.size;
 
     const conversionFactor = getUnitConversion(unit);
 
     const handleDrawingPropertyChange = (updates: Partial<DrawingProperties>) => {
-        if (selectedShape) {
+        if (isMultiSelection) {
+            Array.from(selectedShapeIds).forEach(id => {
+                 updateShape(id, { properties: updates });
+            });
+        } else if (selectedShape) {
             updateShape(selectedShape.id, { properties: updates });
         } else {
             setDrawingProperties(updates);
@@ -134,6 +144,10 @@ const PropertiesPanel: React.FC = () => {
         if (selectedShape) {
             updateShape(selectedShape.id, updates);
         }
+    };
+    
+    const handleDeleteSelection = () => {
+        deleteShapes(Array.from(selectedShapeIds));
     };
     
     const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -328,21 +342,39 @@ const PropertiesPanel: React.FC = () => {
         }
     };
     
+    // Header Logic
+    let headerTitle = 'Propiedades de Dibujo';
+    if (isMultiSelection) {
+        headerTitle = `${multiSelectionCount} Elementos Seleccionados`;
+    } else if (selectedShape) {
+        headerTitle = `Propiedades (${selectedShape.type})`;
+    }
 
     return (
         <div className="flex flex-col h-full text-sm">
-            <h2 className="text-base font-semibold p-4 border-b border-dark-base-300">
-                {selectedShape ? `Propiedades (${selectedShape.type})` : 'Propiedades de Dibujo'}
+            <h2 className="text-base font-semibold p-4 border-b border-dark-base-300 truncate" title={headerTitle}>
+                {headerTitle}
             </h2>
             <div className="flex-grow overflow-y-auto">
-                {selectedShape && (
+                {selectedShape && !isMultiSelection && (
                     <div className="py-2 px-4 space-y-2">
                         <h3 className="py-2 text-sm font-semibold text-dark-base-content/70">Geometría</h3>
                         {renderShapeProperties(selectedShape)}
                     </div>
                 )}
+                
+                {isMultiSelection && (
+                     <div className="py-4 px-4 text-center opacity-70 text-xs italic">
+                         Editando propiedades comunes para {multiSelectionCount} elementos.
+                         <br/>
+                         Los cambios de geometría individuales están deshabilitados.
+                     </div>
+                )}
+
                  <div className="py-2">
                     <h3 className="px-4 py-2 text-sm font-semibold text-dark-base-content/70">Apariencia</h3>
+                    {/* For multi-selection, we show current value if it's the same for all, otherwise maybe a mixed indicator or just the global default. 
+                        Simpler approach: Show the global/default and applying overrides it for all. */}
                     <ColorInput label="Color Trazo" value={currentProps.color} onChange={v => handleDrawingPropertyChange({ color: v })} />
                     <ColorInput label="Relleno" value={currentProps.fill} onChange={v => handleDrawingPropertyChange({ fill: v })} />
                     <div className="px-4 py-2 space-y-2">
@@ -380,17 +412,14 @@ const PropertiesPanel: React.FC = () => {
                         </select>
                     </div>
                 </div>
-                 {selectedShape && (
+                 {(selectedShape || isMultiSelection) && (
                     <div className="px-4 py-4">
                         <button 
-                            onClick={() => {
-                                deleteShape(selectedShape.id);
-                                setSelectedShapeId(null);
-                            }}
+                            onClick={handleDeleteSelection}
                             className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm text-red-400 border border-red-400/50 rounded-lg hover:bg-red-400/10"
                         >
                             <TrashIcon className="w-4 h-4" />
-                            Eliminar Forma
+                            {isMultiSelection ? `Eliminar ${multiSelectionCount} Elementos` : 'Eliminar Forma'}
                         </button>
                     </div>
                 )}

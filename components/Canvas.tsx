@@ -27,6 +27,11 @@ const pointOnLineSegment = (p: Point, a: Point, b: Point, tolerance: number): bo
 };
 
 const rotatePoint = (point: Point, center: Point, angleDeg: number): Point => {
+    if (!center) return point;
+    // Note: angleDeg is CCW.
+    // In screen coords (Y down), standard rotation matrix with -angleDeg (CW logic) actually performs CCW visual rotation
+    // x' = x cos(-a) - y sin(-a)
+    // y' = x sin(-a) + y cos(-a)
     const rad = -angleDeg * Math.PI / 180;
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
@@ -93,6 +98,21 @@ const getLineCircleIntersections = (p1: Point, p2: Point, circle: Circle): Point
     return points;
 };
 
+const getCircleCircleIntersections = (c1: Circle, c2: Circle): Point[] => {
+    const d = distance({x: c1.cx, y: c1.cy}, {x: c2.cx, y: c2.cy});
+    if (d > c1.r + c2.r || d < Math.abs(c1.r - c2.r) || d === 0) return [];
+    
+    const a = (c1.r * c1.r - c2.r * c2.r + d * d) / (2 * d);
+    const h = Math.sqrt(c1.r * c1.r - a * a);
+    
+    const x2 = c1.cx + a * (c2.cx - c1.cx) / d;
+    const y2 = c1.cy + a * (c2.cy - c1.cy) / d;
+    
+    return [
+        { x: x2 + h * (c2.cy - c1.cy) / d, y: y2 - h * (c2.cx - c1.cx) / d },
+        { x: x2 - h * (c2.cy - c1.cy) / d, y: y2 + h * (c2.cx - c1.cx) / d }
+    ];
+};
 
 // Helper: Calculate Circle Center/Radius from 3 Points
 const getCircleFromThreePoints = (p1: Point, p2: Point, p3: Point): { cx: number, cy: number, r: number } | null => {
@@ -163,6 +183,45 @@ const getRotationHandlePos = (shape: AnyShape): { handle: Point, center: Point }
     const handle = rotatePoint(topPoint, center, rotation);
     return { handle, center };
 };
+
+// --- Helper to get Bounding Box of multiple shapes ---
+const calculateSelectionBounds = (shapes: AnyShape[]): Rectangle | null => {
+    if (shapes.length === 0) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+    shapes.forEach(s => {
+        if (s.type === 'line' || s.type === 'dimension') {
+            minX = Math.min(minX, s.p1.x, s.p2.x); maxX = Math.max(maxX, s.p1.x, s.p2.x);
+            minY = Math.min(minY, s.p1.y, s.p2.y); maxY = Math.max(maxY, s.p1.y, s.p2.y);
+            if (s.type === 'dimension') {
+                minX = Math.min(minX, s.offsetPoint.x); maxX = Math.max(maxX, s.offsetPoint.x);
+                minY = Math.min(minY, s.offsetPoint.y); maxY = Math.max(maxY, s.offsetPoint.y);
+            }
+        } else if (s.type === 'rectangle' || s.type === 'title_block') {
+            let sx = s.x, sy = s.y, sw = s.width, sh = s.height;
+            if (sw < 0) { sx += sw; sw = Math.abs(sw); }
+            if (sh < 0) { sy += sh; sh = Math.abs(sh); }
+            minX = Math.min(minX, sx); maxX = Math.max(maxX, sx + sw);
+            minY = Math.min(minY, sy); maxY = Math.max(maxY, sy + sh);
+        } else if (s.type === 'circle') {
+            minX = Math.min(minX, s.cx - s.r); maxX = Math.max(maxX, s.cx + s.r);
+            minY = Math.min(minY, s.cy - s.r); maxY = Math.max(maxY, s.cy + s.r);
+        } else if (s.type === 'text') {
+             // Approx text bounds
+             const width = s.content.length * s.fontSize * 0.6;
+             minX = Math.min(minX, s.x); maxX = Math.max(maxX, s.x + width);
+             minY = Math.min(minY, s.y); maxY = Math.max(maxY, s.y + s.fontSize);
+        } else if (s.type === 'symbol') {
+             const hs = s.size / 2;
+             minX = Math.min(minX, s.x - hs); maxX = Math.max(maxX, s.x + hs);
+             minY = Math.min(minY, s.y - hs); maxY = Math.max(maxY, s.y + hs);
+        }
+    });
+
+    if (minX === Infinity) return null;
+    return { type: 'rectangle', id: 'bounds', x: minX, y: minY, width: maxX - minX, height: maxY - minY, properties: { color: '', fill: '', strokeWidth: 0, lineType: 'solid' } };
+};
+
 
 // --- Ray Intersection Helpers for Extend Tool ---
 const getRaySegmentIntersection = (rayOrigin: Point, rayDir: Point, segStart: Point, segEnd: Point): Point | null => {
@@ -299,20 +358,22 @@ const getStrokeDashArray = (lineType: LineType | undefined, strokeWidth: number 
     }
 };
 
-const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected: boolean; isHighlighted?: boolean; conversionFactor: number; isPreview?: boolean; isGhost?: boolean; }> = React.memo(({ shape, isSelected, isHighlighted = false, conversionFactor, isPreview = false, isGhost = false }) => {
+const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected: boolean; isHighlighted?: boolean; conversionFactor: number; isPreview?: boolean; opacity?: number }> = React.memo(({ shape, isSelected, isHighlighted = false, conversionFactor, isPreview = false, opacity }) => {
     const effectivelySelected = isSelected || isHighlighted;
     const strokeWidth = shape.properties?.strokeWidth || 1;
     // For selection, use a fixed dash array. For drawing, use proportional dash array.
     const strokeDasharray = effectivelySelected ? '4 2' : getStrokeDashArray(shape.properties?.lineType, strokeWidth);
+
+    const effectiveOpacity = opacity !== undefined ? opacity : (isPreview ? 0.7 : 1);
 
     const props = {
         stroke: effectivelySelected ? '#00A8FF' : (shape.properties?.color || '#FFFFFF'),
         fill: shape.properties?.fill || 'transparent',
         strokeWidth: strokeWidth,
         strokeDasharray: strokeDasharray,
-        opacity: isGhost ? 0.2 : (isPreview ? 0.7 : 1),
-        strokeLinecap: 'butt' as React.CSSProperties['strokeLinecap'],
-        strokeLinejoin: 'miter' as React.CSSProperties['strokeLinejoin']
+        opacity: effectiveOpacity,
+        strokeLinecap: 'butt' as 'butt' | 'round' | 'square' | 'inherit',
+        strokeLinejoin: 'miter' as 'miter' | 'round' | 'bevel' | 'inherit'
     };
     
     if (!shape.type) return null;
@@ -327,7 +388,9 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
         if (!isSafeNumber(shape.cx) || !isSafeNumber(shape.cy) || !isSafeNumber(shape.r)) return null;
     }
 
-    const rotData = isSelected ? getRotationHandlePos(shape as AnyShape) : null;
+    // Only show handles if selected, not a preview, and fully opaque (not being manipulated)
+    const showHandles = isSelected && !isPreview && effectiveOpacity > 0.9;
+    const rotData = showHandles ? getRotationHandlePos(shape as AnyShape) : null;
 
     switch (shape.type) {
         case 'line': {
@@ -352,13 +415,13 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
             return (
                 <g>
                     <rect x={renderX} y={renderY} width={renderW} height={renderH} transform={transform} {...props} />
-                    {isSelected && (
+                    {showHandles && (
                         <g transform={transform}>
                              <line x1={centerX - 5} y1={centerY} x2={centerX + 5} y2={centerY} stroke="#00A8FF" strokeWidth="1" />
                              <line x1={centerX} y1={centerY - 5} x2={centerX} y2={centerY + 5} stroke="#00A8FF" strokeWidth="1" />
                         </g>
                     )}
-                    {isSelected && rotData && (
+                    {rotData && (
                         <g>
                              <line x1={rotData.center.x} y1={rotData.center.y} x2={rotData.handle.x} y2={rotData.handle.y} stroke="#00A8FF" strokeWidth="1" />
                              <circle cx={rotData.handle.x} cy={rotData.handle.y} r={4} fill="white" stroke="#00A8FF" strokeWidth="1" style={{cursor: 'grab'}} />
@@ -424,7 +487,7 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
                     <RenderCell bx={xCol3 + wCol3/2} by={yCol3Row1} bw={wCol3/2} bh={hCol3Row} label="FECHA:" value={data.date} />
                     <RenderCell bx={xCol3} by={yCol3Row2} bw={wCol3/2} bh={hCol3Row} label="PLANO:" value={data.sheet} isTitle={true} />
                     <RenderCell bx={xCol3 + wCol3/2} by={yCol3Row2} bw={wCol3/2} bh={hCol3Row} label="REV:" value={data.revision} />
-                    {isSelected && (
+                    {showHandles && (
                         <g>
                             <circle cx={x} cy={y} r={5} fill="white" stroke="#00A8FF" strokeWidth="1" />
                             <circle cx={x + width} cy={y} r={5} fill="white" stroke="#00A8FF" strokeWidth="1" />
@@ -453,7 +516,7 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
                     ) : (
                          <circle cx={s.cx} cy={s.cy} r={s.r} {...props} />
                     )}
-                    {isSelected && (
+                    {showHandles && (
                         <g>
                              <g transform={`translate(${s.cx}, ${s.cy})`}>
                                 <line x1={-4} y1={0} x2={4} y2={0} stroke="#00A8FF" strokeWidth="1" />
@@ -552,7 +615,7 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
                     <text x={s.x} y={s.y} fill={effectivelySelected ? '#00A8FF' : props.stroke} fontSize={s.fontSize} dominantBaseline="hanging" transform={transform} style={{ userSelect: 'none', fontFamily: 'sans-serif' }} opacity={props.opacity}>
                         {s.content}
                     </text>
-                     {isSelected && rotData && (
+                     {showHandles && rotData && (
                         <g>
                              <line x1={rotData.center.x} y1={rotData.center.y} x2={rotData.center.x} y2={rotData.handle.y} stroke="#00A8FF" strokeWidth="1" />
                              <circle cx={rotData.handle.x} cy={rotData.handle.y} r={4} fill="white" stroke="#00A8FF" strokeWidth="1" style={{cursor: 'grab'}} />
@@ -590,7 +653,7 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
              return (
                 <g>
                     <g {...symbolProps}>{content}</g>
-                    {isSelected && rotData && (
+                    {showHandles && rotData && (
                         <g>
                              <line x1={rotData.center.x} y1={rotData.center.y} x2={rotData.handle.x} y2={rotData.handle.y} stroke="#00A8FF" strokeWidth="1" vectorEffect="non-scaling-stroke" />
                              <circle cx={rotData.handle.x} cy={rotData.handle.y} r={4 / conversionFactor} fill="white" stroke="#00A8FF" strokeWidth="1" style={{cursor: 'grab'}} vectorEffect="non-scaling-stroke" />
@@ -604,21 +667,201 @@ const ShapeRenderer: React.FC<{ shape: AnyShape | Partial<AnyShape>; isSelected:
 });
 
 type TrimGeometry = 
-    | { type: 'line', p1: Point, p2: Point, tMin: number, tMax: number }
+    | { type: 'line', p1: Point, p2: Point, tMin: number, tMax: number, sideIndex?: number }
     | { type: 'arc', cx: number, cy: number, r: number, startAngle: number, endAngle: number };
 
 const Canvas: React.FC = () => {
-    // ... Context and Refs (preserved) ...
     const {
         shapes, addShapes, addShape, activeTool, setActiveTool, drawingProperties, viewTransform,
-        selectedShapeId, setSelectedShapeId, snapModes, isOrthoMode, unit,
-        clipboard, setClipboard, updateShape, replaceShapes, deleteShape, deleteShapes,
+        selectedShapeId, setSelectedShapeId, selectedShapeIds, setSelectedShapeIds, toggleShapeSelection,
+        snapModes, isOrthoMode, unit,
+        clipboard, setClipboard, updateShape, updateShapes, replaceShapes, deleteShape, deleteShapes,
         templateImage
     } = useAppContext();
     const { setViewTransform } = useAppContext();
 
+    // calculateTrimSegments implementation for trim tool
+    const calculateTrimSegments = (target: AnyShape, cursor: Point): TrimGeometry | null => {
+        // Collect intersections
+        const intersections: Point[] = [];
+        const otherShapes = shapes.filter(s => s.id !== target.id);
+        
+        // Helper to get all intersections for a line segment against world
+        const getIntersectionsOnSegment = (p1: Point, p2: Point): number[] => {
+            const ts: number[] = [0, 1];
+            otherShapes.forEach(s => {
+                 if (s.type === 'line') {
+                      const p = getSegmentIntersection(p1, p2, s.p1, s.p2);
+                      if (p) {
+                          const v = subtract(p2, p1);
+                          const vp = subtract(p, p1);
+                          const t = dot(vp, v) / dot(v, v);
+                          if (t > 0.001 && t < 0.999) ts.push(t);
+                      }
+                 } else if (s.type === 'rectangle' || s.type === 'title_block') {
+                      const { x, y, width, height } = s;
+                      const corners = [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
+                      const center = { x: x + width/2, y: y + height/2 };
+                      const rot = 'rotation' in s ? (s.rotation || 0) : 0;
+                      const rotatedCorners = corners.map(p => rotatePoint(p, center, rot));
+                      for(let i=0; i<4; i++) {
+                          const p = getSegmentIntersection(p1, p2, rotatedCorners[i], rotatedCorners[(i+1)%4]);
+                          if (p) {
+                             const v = subtract(p2, p1);
+                             const vp = subtract(p, p1);
+                             const t = dot(vp, v) / dot(v, v);
+                             if (t > 0.001 && t < 0.999) ts.push(t);
+                          }
+                      }
+                 } else if (s.type === 'circle') {
+                     const points = getLineCircleIntersections(p1, p2, s);
+                     points.forEach(p => {
+                         const v = subtract(p2, p1);
+                         const vp = subtract(p, p1);
+                         const t = dot(vp, v) / dot(v, v);
+                         if (t > 0.001 && t < 0.999) ts.push(t);
+                     });
+                 }
+            });
+            return Array.from(new Set(ts)).sort((a, b) => a - b);
+        };
+
+        if (target.type === 'line') {
+            const ts = getIntersectionsOnSegment(target.p1, target.p2);
+            // Require intersections to trim
+            if (ts.length <= 2) return null;
+
+            const v = subtract(target.p2, target.p1);
+            const lenSq = dot(v, v);
+            if (lenSq === 0) return null;
+            const vp = subtract(cursor, target.p1);
+            const tCursor = dot(vp, v) / lenSq;
+            for (let i = 0; i < ts.length - 1; i++) {
+                if (tCursor >= ts[i] && tCursor <= ts[i+1]) return { type: 'line', p1: target.p1, p2: target.p2, tMin: ts[i], tMax: ts[i+1] };
+            }
+            if (tCursor < 0) return { type: 'line', p1: target.p1, p2: target.p2, tMin: ts[0], tMax: ts[1] };
+            if (tCursor > 1) return { type: 'line', p1: target.p1, p2: target.p2, tMin: ts[ts.length-2], tMax: ts[ts.length-1] };
+            return null;
+        } 
+        else if (target.type === 'rectangle') {
+            const { x, y, width, height } = target;
+            const corners = [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
+            const center = { x: x + width/2, y: y + height/2 };
+            const rot = target.rotation || 0;
+            const rotatedCorners = corners.map(p => rotatePoint(p, center, rot));
+            
+            // Find closest side to cursor
+            let bestSideIdx = -1;
+            let minDist = Infinity;
+            
+            for(let i=0; i<4; i++) {
+                const p1 = rotatedCorners[i];
+                const p2 = rotatedCorners[(i+1)%4];
+                // Project cursor onto line segment to find distance
+                const v = subtract(p2, p1);
+                const w = subtract(cursor, p1);
+                const c1 = dot(w, v);
+                const c2 = dot(v, v);
+                let t = c1/c2;
+                if(t < 0) t = 0; if(t > 1) t = 1;
+                const closestPoint = add(p1, scale(v, t));
+                const d = distance(cursor, closestPoint);
+                if(d < minDist) { minDist = d; bestSideIdx = i; }
+            }
+
+            if(bestSideIdx !== -1) {
+                const p1 = rotatedCorners[bestSideIdx];
+                const p2 = rotatedCorners[(bestSideIdx+1)%4];
+                const ts = getIntersectionsOnSegment(p1, p2);
+                
+                // Require intersections
+                if (ts.length <= 2) return null;
+
+                const v = subtract(p2, p1);
+                const lenSq = dot(v, v);
+                const vp = subtract(cursor, p1);
+                const tCursor = dot(vp, v) / lenSq;
+                
+                let tMin = 0, tMax = 1;
+                let found = false;
+                for (let i = 0; i < ts.length - 1; i++) {
+                    if (tCursor >= ts[i] && tCursor <= ts[i+1]) { tMin = ts[i]; tMax = ts[i+1]; found=true; break; }
+                }
+                if(!found) {
+                     if (tCursor < 0) { tMin = ts[0]; tMax = ts[1]; }
+                     else if (tCursor > 1) { tMin = ts[ts.length-2]; tMax = ts[ts.length-1]; }
+                }
+                return { type: 'line', p1, p2, tMin, tMax, sideIndex: bestSideIdx };
+            }
+            return null;
+        }
+        else if (target.type === 'circle') {
+             // Collect angular intersections
+             let angles: number[] = [];
+             const center = {x: target.cx, y: target.cy};
+             
+             otherShapes.forEach(s => {
+                  let points: Point[] = [];
+                  if(s.type === 'line') {
+                       points = getLineCircleIntersections(s.p1, s.p2, target);
+                  } else if (s.type === 'rectangle' || s.type === 'title_block') {
+                      const { x, y, width, height } = s;
+                      const corners = [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
+                      const c = { x: x + width/2, y: y + height/2 };
+                      const rot = 'rotation' in s ? (s.rotation || 0) : 0;
+                      const rc = corners.map(p => rotatePoint(p, c, rot));
+                      for(let i=0; i<4; i++) {
+                           points.push(...getLineCircleIntersections(rc[i], rc[(i+1)%4], target));
+                      }
+                  } else if (s.type === 'circle') {
+                       points = getCircleCircleIntersections(target, s);
+                  }
+                  
+                  points.forEach(p => {
+                       angles.push(angle(subtract(p, center)));
+                  });
+             });
+             
+             const isArc = target.startAngle !== undefined && target.endAngle !== undefined;
+             if (isArc) {
+                  angles.push(target.startAngle!);
+                  angles.push(target.endAngle!);
+             }
+             
+             angles = Array.from(new Set(angles)).sort((a, b) => a - b);
+             if (angles.length === 0) return null; // No intersections to trim against
+             
+             // Wrap logic for full circles
+             if (!isArc && angles.length > 0) {
+                  angles.push(angles[0] + 360);
+             }
+
+             // Find angle under cursor
+             let cursorAngle = angle(subtract(cursor, center));
+             
+             for(let i=0; i<angles.length-1; i++) {
+                  let start = angles[i];
+                  let end = angles[i+1];
+                  
+                  let ca = cursorAngle;
+                  // For full circle wrapping
+                  if (ca < start && !isArc) ca += 360;
+                  
+                  if (ca >= start && ca <= end) {
+                       return { type: 'arc', cx: target.cx, cy: target.cy, r: target.r, startAngle: start % 360, endAngle: end % 360 };
+                  }
+             }
+             
+             return null;
+        }
+
+        return null;
+    };
+
     const svgRef = useRef<SVGSVGElement>(null);
     const isInteractingRef = useRef(false);
+    // Ref to prevent double-firing of handlePointerUp on the same interaction sequence
+    const hasHandledUpRef = useRef(false);
     
     const [mousePosition, setMousePosition] = useState<Point>({ x: 0, y: 0 });
     const [panStart, setPanStart] = useState<Point | null>(null);
@@ -628,7 +871,6 @@ const Canvas: React.FC = () => {
     const [arcPoints, setArcPoints] = useState<Point[]>([]);
     
     const [selectionRect, setSelectionRect] = useState<Rectangle | null>(null);
-    const [highlightedShapeIds, setHighlightedShapeIds] = useState<Set<string>>(new Set());
 
     const [hoveredShapeId, setHoveredShapeId] = useState<string | null>(null);
     const [activeSnapPoint, setActiveSnapPoint] = useState<{ point: Point, type: SnapMode } | null>(null);
@@ -649,11 +891,19 @@ const Canvas: React.FC = () => {
     const [hoveredExtendPreview, setHoveredExtendPreview] = useState<{ originalShape: Line, newEndpoint: Point, endToUpdate: 'p1' | 'p2' } | null>(null);
     const [hoveredDimensionTarget, setHoveredDimensionTarget] = useState<{ type: 'segment' | 'circle', p1: Point, p2: Point, circleId?: string } | null>(null);
     const [moveBasePoint, setMoveBasePoint] = useState<Point | null>(null);
-    const [rotateState, setRotateState] = useState<{ startAngle: number, initialRotation: number, center: Point, originalShape: AnyShape } | null>(null);
+    const [rotateState, setRotateState] = useState<{ startAngle: number, center: Point, groupOriginals: Record<string, AnyShape> } | null>(null);
     
     const MAX_SAFE_RADIUS = 500000;
 
-    // ... Effects (preserved) ...
+    // Bounds for Selection Box
+    const multiSelectionBounds = useMemo(() => {
+        if (selectedShapeIds.size > 1) {
+             const selected = shapes.filter(s => selectedShapeIds.has(s.id));
+             return calculateSelectionBounds(selected);
+        }
+        return null;
+    }, [selectedShapeIds, shapes]);
+
     useEffect(() => {
         if (svgRef.current) {
             const rect = svgRef.current.getBoundingClientRect();
@@ -665,8 +915,9 @@ const Canvas: React.FC = () => {
 
     useEffect(() => {
         const handleGlobalPointerUp = (e: PointerEvent) => {
+            // Forward the global pointer event to our handler
             if (isInteractingRef.current || draggingHandle || panStart || currentShape || dragStartScreenPos) {
-                 handlePointerUp(e as unknown as ReactPointerEvent<SVGSVGElement>);
+                 handlePointerUp(e);
             }
         };
         window.addEventListener('pointerup', handleGlobalPointerUp);
@@ -686,13 +937,13 @@ const Canvas: React.FC = () => {
                 if (activeTool !== 'select') {
                     setActiveTool('select'); setHoveredTrimSegment(null); setHoveredExtendPreview(null); setMoveBasePoint(null); setRotateState(null); handled = true;
                 }
-                if (!handled && (selectedShapeId || highlightedShapeIds.size > 0)) {
-                    setSelectedShapeId(null); setHighlightedShapeIds(new Set());
+                if (!handled && (selectedShapeIds.size > 0)) {
+                    setSelectedShapeIds(new Set());
                 }
                 return;
             }
              if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName || '')) return;
-             const selectedIds = highlightedShapeIds.size > 0 ? Array.from(highlightedShapeIds) : (selectedShapeId ? [selectedShapeId] : []);
+             const selectedIds = Array.from(selectedShapeIds);
             if (selectedIds.length > 0) {
                 const step = e.shiftKey ? 10 : 1;
                 let dx = 0; let dy = 0;
@@ -701,10 +952,13 @@ const Canvas: React.FC = () => {
                     case 'ArrowRight': dx = step; break;
                     case 'ArrowUp': dy = -step; break;
                     case 'ArrowDown': dy = step; break;
-                    case 'Backspace': case 'Delete': e.preventDefault(); deleteShapes(selectedIds); setSelectedShapeId(null); setHighlightedShapeIds(new Set()); return;
+                    case 'Backspace': case 'Delete': e.preventDefault(); deleteShapes(selectedIds); return;
                     default: return;
                 }
-                e.preventDefault(); 
+                e.preventDefault();
+                
+                // BATCH UPDATE FOR KEYBOARD MOVES
+                const batchUpdates: { id: string, updates: AnyShapePropertyUpdates }[] = [];
                 selectedIds.forEach(id => {
                     const shape = shapes.find(s => s.id === id);
                     if (!shape) return;
@@ -718,13 +972,14 @@ const Canvas: React.FC = () => {
                     } else if (shape.type === 'circle') {
                         updates.cx = shape.cx + dx; updates.cy = shape.cy + dy;
                     }
-                    updateShape(id, updates);
+                    batchUpdates.push({ id, updates });
                 });
+                updateShapes(batchUpdates);
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedShapeId, shapes, updateShape, deleteShape, deleteShapes, setSelectedShapeId, activeTool, setActiveTool, currentShape, dimensionStep, draggingHandle, panStart, highlightedShapeIds, arcStep]);
+    }, [selectedShapeIds, shapes, updateShape, updateShapes, deleteShape, deleteShapes, setSelectedShapeIds, activeTool, setActiveTool, currentShape, dimensionStep, draggingHandle, panStart, arcStep]);
 
     useEffect(() => {
         setHoveredTrimSegment(null); setHoveredExtendPreview(null); setMoveBasePoint(null); setRotateState(null);
@@ -761,7 +1016,7 @@ const Canvas: React.FC = () => {
             let hitPos = pos;
             if ((shape.type === 'rectangle' || shape.type === 'text' || shape.type === 'symbol' || shape.type === 'title_block') && ('rotation' in shape ? shape.rotation : 0)) {
                  let center = {x: 0, y: 0};
-                 if (shape.type === 'rectangle' || shape.type === 'title_block') center = { x: shape.x + shape.width/2, y: shape.y + shape.height/2 };
+                 if (shape.type === 'rectangle' || shape.type === 'title_block') center = { x: shape.x + shape.width/2, y: shape.y + shape.height / 2 };
                  else center = { x: shape.x, y: shape.y };
                  hitPos = rotatePoint(pos, center, -(shape.rotation || 0));
             }
@@ -792,68 +1047,11 @@ const Canvas: React.FC = () => {
         return null;
     }
     
-    // Calculate Trim Segments logic (Dynamic Segmentation)
-    const calculateTrimSegments = (targetShape: AnyShape, worldPos: Point) => {
-        if (targetShape.type === 'line') {
-            const intersections: number[] = [0, 1]; // Start and end t parameters
-            const p1 = targetShape.p1;
-            const p2 = targetShape.p2;
-            const len = distance(p1, p2);
-            if (len === 0) return null;
-
-            shapes.forEach(cutter => {
-                if (cutter.id === targetShape.id) return;
-                let pts: Point[] = [];
-                if (cutter.type === 'line') {
-                    const p = getSegmentIntersection(p1, p2, cutter.p1, cutter.p2);
-                    if (p) pts.push(p);
-                } else if (cutter.type === 'rectangle') {
-                    const { x, y, width, height } = cutter;
-                    const corners = [{x,y}, {x:x+width,y}, {x:x+width,y:y+height}, {x,y:y+height}];
-                    for(let i=0; i<4; i++) {
-                        const p = getSegmentIntersection(p1, p2, corners[i], corners[(i+1)%4]);
-                        if (p) pts.push(p);
-                    }
-                } else if (cutter.type === 'circle') {
-                    const cp = getLineCircleIntersections(p1, p2, cutter);
-                    pts.push(...cp);
-                }
-                
-                pts.forEach(pt => {
-                    const t = distance(p1, pt) / len;
-                    if (t > 0.001 && t < 0.999) intersections.push(t);
-                });
-            });
-
-            intersections.sort((a, b) => a - b);
-            
-            // Project mouse to line to find t
-            const v = subtract(p2, p1);
-            const w = subtract(worldPos, p1);
-            let tMouse = dot(w, v) / dot(v, v);
-            if (tMouse < 0) tMouse = 0; if (tMouse > 1) tMouse = 1;
-
-            // Find segment containing mouse
-            for (let i = 0; i < intersections.length - 1; i++) {
-                if (tMouse >= intersections[i] && tMouse <= intersections[i+1]) {
-                    const tStart = intersections[i];
-                    const tEnd = intersections[i+1];
-                    const segP1 = add(p1, scale(v, tStart));
-                    const segP2 = add(p1, scale(v, tEnd));
-                    return { type: 'line', p1: segP1, p2: segP2, tMin: tStart, tMax: tEnd } as TrimGeometry;
-                }
-            }
-        } else if (targetShape.type === 'circle') {
-             return { type: 'arc', cx: targetShape.cx, cy: targetShape.cy, r: targetShape.r, startAngle: targetShape.startAngle||0, endAngle: targetShape.endAngle||360 } as TrimGeometry;
-        }
-        return null;
-    };
-
-
-    // ... Event Handlers (PointerDown, PointerMove, PointerUp, Wheel) - Preserving logic ...
+    // ... Event Handlers ...
     const handlePointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { }
         isInteractingRef.current = true;
+        hasHandledUpRef.current = false;
         setActiveSnapPoint(null);
 
         const rect = e.currentTarget.getBoundingClientRect();
@@ -868,25 +1066,142 @@ const Canvas: React.FC = () => {
             return;
         }
 
+        // --- Move Tool Specific Click Logic ---
+        if (activeTool === 'move') {
+            if (selectedShapeIds.size > 0) {
+                if (!moveBasePoint) { 
+                    setMoveBasePoint(snapPos); 
+                } else {
+                    // Second click of Click-Click move -> Commit immediately
+                    const delta = subtract(snapPos, moveBasePoint);
+                    const batchUpdates: { id: string, updates: AnyShapePropertyUpdates }[] = [];
+                    
+                    Array.from(selectedShapeIds).forEach(id => {
+                        const shape = shapes.find(s => s.id === id); if (!shape) return;
+                        const updates: AnyShapePropertyUpdates = {};
+                        if (shape.type === 'line' || shape.type === 'dimension') { updates.p1 = add(shape.p1, delta); updates.p2 = add(shape.p2, delta); if (shape.type === 'dimension') updates.offsetPoint = add(shape.offsetPoint, delta); } 
+                        else if (shape.type === 'rectangle' || shape.type === 'text' || shape.type === 'symbol' || shape.type === 'title_block') { updates.x = shape.x + delta.x; updates.y = shape.y + delta.y; } 
+                        else if (shape.type === 'circle') { updates.cx = shape.cx + delta.x; updates.cy = shape.cy + delta.y; }
+                        batchUpdates.push({ id, updates });
+                    });
+                    
+                    if (batchUpdates.length > 0) updateShapes(batchUpdates);
+                    setMoveBasePoint(null); 
+                }
+            }
+            return;
+        }
+
         if (activeTool === 'select') {
-            if (selectedShapeId && !e.shiftKey) {
+            const tolerance = 5 / viewTransform.scale;
+            
+            // Multi-Selection Rotation Handle Check
+            if (selectedShapeIds.size > 1 && multiSelectionBounds) {
+                const bounds = multiSelectionBounds;
+                const topCenter = { x: bounds.x + bounds.width / 2, y: bounds.y };
+                const handlePos = { x: topCenter.x, y: topCenter.y - 30 / viewTransform.scale };
+                const handleTolerance = 10 / viewTransform.scale;
+
+                if (distance(startPos, handlePos) < handleTolerance) {
+                    const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+                    const groupOriginals: Record<string, AnyShape> = {};
+                    selectedShapeIds.forEach(id => { const s = shapes.find(x => x.id === id); if (s) groupOriginals[id] = JSON.parse(JSON.stringify(s)); });
+
+                    setDraggingHandle({ shapeId: 'group-rotator', handleIndex: 'rotate', originalShape: {} as any });
+                    setRotateState({
+                        startAngle: angle(subtract(startPos, center)),
+                        center,
+                        groupOriginals
+                    });
+                    return;
+                }
+            }
+
+            // Check rotation handles first if single selection
+            if (selectedShapeId && selectedShapeIds.size === 1 && !e.shiftKey) {
                 const selectedShape = shapes.find(s => s.id === selectedShapeId);
                 if (selectedShape) {
                     const rotHandle = getRotationHandlePos(selectedShape);
-                    const tolerance = 10 / viewTransform.scale;
-                    if (rotHandle && distance(rotHandle.handle, startPos) < tolerance) {
+                    const handleTolerance = 10 / viewTransform.scale;
+                    if (rotHandle && distance(rotHandle.handle, startPos) < handleTolerance) {
                         let center = rotHandle.center;
-                        let currentRot = ('rotation' in selectedShape ? selectedShape.rotation : 0) || 0;
                         setDraggingHandle({ shapeId: selectedShapeId, handleIndex: 'rotate', originalShape: JSON.parse(JSON.stringify(selectedShape)) as AnyShape });
-                         setRotateState({ startAngle: angle(subtract(startPos, center)), initialRotation: currentRot, center, originalShape: JSON.parse(JSON.stringify(selectedShape)) as AnyShape });
+                        setRotateState({ 
+                            startAngle: angle(subtract(startPos, center)), 
+                            center, 
+                            groupOriginals: { [selectedShapeId]: JSON.parse(JSON.stringify(selectedShape)) as AnyShape }
+                        });
                         return;
                     }
                     const snapPoints = getShapeSnapPoints(selectedShape);
-                    const clickedHandleIndex = snapPoints.findIndex(sp => distance(sp.point, startPos) < tolerance);
+                    const clickedHandleIndex = snapPoints.findIndex(sp => distance(sp.point, startPos) < handleTolerance);
                     if (clickedHandleIndex !== -1) {
                         setDraggingHandle({ shapeId: selectedShapeId, handleIndex: clickedHandleIndex, originalShape: JSON.parse(JSON.stringify(selectedShape)) as AnyShape });
                         return;
                     }
+                }
+            }
+            
+            // Selection Logic (Click to Select / Shift+Click)
+            const hitId = getHitTest(startPos, tolerance);
+            
+            if (hitId) {
+                let newSelectedIds = new Set(selectedShapeIds);
+                
+                if (e.shiftKey) {
+                    toggleShapeSelection(hitId);
+                    if (selectedShapeIds.has(hitId)) newSelectedIds.delete(hitId); else newSelectedIds.add(hitId);
+                } else {
+                    if (!selectedShapeIds.has(hitId)) {
+                        setSelectedShapeIds(new Set([hitId]));
+                        newSelectedIds = new Set([hitId]);
+                    }
+                }
+
+                if (newSelectedIds.has(hitId)) {
+                    // Prepare for Drag Move (Group or Single)
+                    // CRITICAL: Ensure ALL items in selection are added to groupOriginals
+                    const groupOriginals: Record<string, AnyShape> = {};
+                    newSelectedIds.forEach(id => { 
+                        const s = shapes.find(x => x.id === id); 
+                        if(s) groupOriginals[id] = JSON.parse(JSON.stringify(s)) as AnyShape; 
+                    });
+                    
+                    const originalShape = shapes.find(s=>s.id===hitId)!;
+                    
+                    setDraggingHandle({ 
+                        shapeId: hitId, 
+                        handleIndex: 'move', 
+                        originalShape: originalShape, 
+                        groupOriginals 
+                    });
+                    setDragStartPos(startPos);
+                }
+            } else {
+                // Clicked on empty space...
+                // Check if inside Multi-Selection Box -> Trigger Move for Group
+                if (selectedShapeIds.size > 1 && multiSelectionBounds) {
+                     const isInside = startPos.x >= multiSelectionBounds.x && startPos.x <= multiSelectionBounds.x + multiSelectionBounds.width &&
+                                      startPos.y >= multiSelectionBounds.y && startPos.y <= multiSelectionBounds.y + multiSelectionBounds.height;
+                     if (isInside && !e.shiftKey) {
+                          // Move the whole group
+                          const groupOriginals: Record<string, AnyShape> = {};
+                          selectedShapeIds.forEach(id => { const s = shapes.find(x => x.id === id); if(s) groupOriginals[id] = JSON.parse(JSON.stringify(s)) as AnyShape; });
+                          // Use bounds ID as dummy
+                          setDraggingHandle({ 
+                                shapeId: 'bounds', 
+                                handleIndex: 'move', 
+                                originalShape: {} as any, 
+                                groupOriginals 
+                          });
+                          setDragStartPos(startPos);
+                          return;
+                     }
+                }
+
+                // Otherwise, Start Selection Box
+                if (!e.shiftKey) {
+                    setSelectedShapeIds(new Set());
                 }
             }
             return; 
@@ -905,7 +1220,64 @@ const Canvas: React.FC = () => {
                   if (tMax < 0.999) { shapesToAdd.push({ ...originalShape, p1: add(originalShape.p1, scale(vec, tMax)), p2: originalShape.p2 }); }
                   replaceShapes([shapeId], shapesToAdd);
                   setHoveredTrimSegment(null);
-             } else if (originalShape) {
+             } else if (originalShape && originalShape.type === 'rectangle' && geometry.type === 'line') {
+                  // Explode rectangle into lines, keeping 3 lines and trimming the 4th
+                  const { x, y, width, height } = originalShape;
+                  const corners = [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
+                  const center = { x: x + width/2, y: y + height/2 };
+                  const rot = originalShape.rotation || 0;
+                  const rc = corners.map(p => rotatePoint(p, center, rot));
+                  
+                  const shapesToAdd: Omit<Line, 'id'>[] = [];
+                  
+                  for(let i=0; i<4; i++) {
+                       const p1 = rc[i];
+                       const p2 = rc[(i+1)%4];
+                       
+                       // Approximate match (geometry p1/p2 are same as side p1/p2)
+                       if (geometry.sideIndex !== undefined && i === geometry.sideIndex) {
+                            // This is the trimmed side. Add split lines.
+                            const vec = subtract(p2, p1);
+                            const tMin = geometry.tMin;
+                            const tMax = geometry.tMax;
+                            // Validate lengths to avoid micro segments
+                            const sideLen = distance(p1, p2);
+                            if (tMin > 0.001 && (tMin * sideLen) > 0.001) { shapesToAdd.push({ type: 'line', p1: p1, p2: add(p1, scale(vec, tMin)), properties: originalShape.properties } as Omit<Line, 'id'>); }
+                            if (tMax < 0.999 && ((1 - tMax) * sideLen) > 0.001) { shapesToAdd.push({ type: 'line', p1: add(p1, scale(vec, tMax)), p2: p2, properties: originalShape.properties } as Omit<Line, 'id'>); }
+                       } else {
+                            // Keep side as is
+                            shapesToAdd.push({ type: 'line', p1: p1, p2: p2, properties: originalShape.properties } as Omit<Line, 'id'>);
+                       }
+                  }
+                  replaceShapes([shapeId], shapesToAdd);
+                  setHoveredTrimSegment(null);
+
+             } else if (originalShape && originalShape.type === 'circle' && geometry.type === 'arc') {
+                  const shapesToAdd: Omit<Circle, 'id'>[] = [];
+                  
+                  // Original interval (0-360 or Start-End)
+                  const origStart = (originalShape.startAngle !== undefined) ? originalShape.startAngle : 0;
+                  const origEnd = (originalShape.endAngle !== undefined) ? originalShape.endAngle : 360;
+
+                  // Cut interval
+                  const cutStart = geometry.startAngle;
+                  const cutEnd = geometry.endAngle;
+                  
+                  // We need to keep [origStart, cutStart] and [cutEnd, origEnd]
+                  const diff1 = (cutStart - origStart + 360) % 360;
+                  if (diff1 > 0.1) {
+                       shapesToAdd.push({ ...originalShape, startAngle: origStart, endAngle: cutStart });
+                  }
+                  
+                  const diff2 = (origEnd - cutEnd + 360) % 360;
+                  if (diff2 > 0.1) {
+                       shapesToAdd.push({ ...originalShape, startAngle: cutEnd, endAngle: origEnd });
+                  }
+                  
+                  replaceShapes([shapeId], shapesToAdd);
+                  setHoveredTrimSegment(null);
+             }
+             else if (originalShape) {
                   deleteShape(shapeId); setHoveredTrimSegment(null);
              }
              return;
@@ -930,41 +1302,51 @@ const Canvas: React.FC = () => {
         }
         
         if (activeTool === 'rotate') {
+             // Try to hit a shape, but if nothing hit and we have selection, use selection as target
              const hitId = getHitTest(startPos, 5 / viewTransform.scale);
-             const targetId = hitId || selectedShapeId;
-             if (targetId) {
-                  if(hitId && hitId !== selectedShapeId) setSelectedShapeId(hitId);
-                  const shape = shapes.find(s => s.id === targetId);
-                  if (shape) {
-                       let center = { x: 0, y: 0 };
-                       let currentRot = ('rotation' in shape ? shape.rotation : 0) || 0;
-                        if (shape.type === 'rectangle' || shape.type === 'title_block') center = { x: shape.x + shape.width/2, y: shape.y + shape.height/2 };
-                        else if (shape.type === 'symbol' || shape.type === 'text') center = { x: shape.x, y: shape.y };
-                        else if (shape.type === 'line' || shape.type === 'dimension') center = { x: (shape.p1.x + shape.p2.x)/2, y: (shape.p1.y + shape.p2.y)/2 };
-                        else if (shape.type === 'circle') center = { x: shape.cx, y: shape.cy };
-                        setRotateState({ startAngle: angle(subtract(startPos, center)), initialRotation: currentRot, center, originalShape: JSON.parse(JSON.stringify(shape)) as AnyShape });
-                  }
+             let targetIds = new Set<string>();
+             
+             if (hitId && selectedShapeIds.has(hitId)) {
+                  targetIds = selectedShapeIds; // Clicked on one of the selected items
+             } else if (hitId) {
+                  targetIds = new Set([hitId]); // Clicked on unselected item
+             } else if (selectedShapeIds.size > 0) {
+                  targetIds = selectedShapeIds; // Clicked on empty space but have selection
+             }
+
+             if (targetIds.size > 0) {
+                 if(hitId && !selectedShapeIds.has(hitId)) setSelectedShapeIds(new Set([hitId]));
+                 
+                 const shapesToRotate = Array.from(targetIds).map(id => shapes.find(s => s.id === id)).filter(Boolean) as AnyShape[];
+                 
+                 if (shapesToRotate.length > 0) {
+                      let center = { x: 0, y: 0 };
+                      
+                      if (shapesToRotate.length === 1) {
+                           const shape = shapesToRotate[0];
+                           if (shape.type === 'rectangle' || shape.type === 'title_block') center = { x: shape.x + shape.width/2, y: shape.y + shape.height/2 };
+                           else if (shape.type === 'symbol' || shape.type === 'text') center = { x: shape.x, y: shape.y };
+                           else if (shape.type === 'line' || shape.type === 'dimension') center = { x: (shape.p1.x + shape.p2.x)/2, y: (shape.p1.y + shape.p2.y)/2 };
+                           else if (shape.type === 'circle') center = { x: shape.cx, y: shape.cy };
+                      } else {
+                           // Group rotation center
+                           const bounds = calculateSelectionBounds(shapesToRotate);
+                           if (bounds) {
+                                center = { x: bounds.x + bounds.width/2, y: bounds.y + bounds.height/2 };
+                           }
+                      }
+                      
+                      const groupOriginals: Record<string, AnyShape> = {};
+                      shapesToRotate.forEach(s => groupOriginals[s.id] = JSON.parse(JSON.stringify(s)) as AnyShape);
+
+                      setRotateState({ 
+                          startAngle: angle(subtract(startPos, center)), 
+                          center, 
+                          groupOriginals 
+                      });
+                 }
              }
              return;
-        }
-        
-        if (activeTool === 'move') {
-            if (highlightedShapeIds.size > 0 || selectedShapeId) {
-                if (!moveBasePoint) { setMoveBasePoint(snapPos); } else {
-                    const delta = subtract(snapPos, moveBasePoint);
-                    const idsToMove = highlightedShapeIds.size > 0 ? Array.from(highlightedShapeIds) : (selectedShapeId ? [selectedShapeId] : []);
-                    idsToMove.forEach(id => {
-                        const shape = shapes.find(s => s.id === id); if (!shape) return;
-                        const updates: AnyShapePropertyUpdates = {};
-                        if (shape.type === 'line' || shape.type === 'dimension') { updates.p1 = add(shape.p1, delta); updates.p2 = add(shape.p2, delta); if (shape.type === 'dimension') updates.offsetPoint = add(shape.offsetPoint, delta); } 
-                        else if (shape.type === 'rectangle' || shape.type === 'text' || shape.type === 'symbol' || shape.type === 'title_block') { updates.x = shape.x + delta.x; updates.y = shape.y + delta.y; } 
-                        else if (shape.type === 'circle') { updates.cx = shape.cx + delta.x; updates.cy = shape.cy + delta.y; }
-                        updateShape(id, updates);
-                    });
-                    setMoveBasePoint(null); setDragStartScreenPos(null); 
-                }
-            }
-            return;
         }
 
         if (activeTool === 'extend' && hoveredExtendPreview) {
@@ -1050,31 +1432,31 @@ const Canvas: React.FC = () => {
         let currentSnapPoint: { point: Point; type: SnapMode; } | null = null;
         let currentInferenceLines: Line[] = [];
 
-        if (activeTool === 'select' && dragStartScreenPos && !draggingHandle && !selectionRect) {
+        // Logic for Select Tool Dragging (Box Selection)
+        if (activeTool === 'select' && dragStartScreenPos && !draggingHandle && !rotateState) {
             const screenDist = distance(dragStartScreenPos, localMousePos);
-            if (screenDist > DRAG_THRESHOLD) {
+            if (screenDist > DRAG_THRESHOLD || selectionRect) {
                 const startWorld = screenToWorld(dragStartScreenPos);
-                const hitId = getHitTest(startWorld, 5 / viewTransform.scale);
-                if (hitId) {
-                     // ... Drag Move Logic ...
-                     const isMulti = e.shiftKey || highlightedShapeIds.has(hitId);
-                     if (isMulti) {
-                         if (!highlightedShapeIds.has(hitId)) { const newSet = new Set(highlightedShapeIds); newSet.add(hitId); setHighlightedShapeIds(newSet); setSelectedShapeId(hitId); }
-                         const groupOriginals: Record<string, AnyShape> = {};
-                         const currentIds = highlightedShapeIds.has(hitId) ? highlightedShapeIds : new Set([hitId]);
-                         currentIds.forEach(id => { const s = shapes.find(x => x.id === id); if(s) groupOriginals[id] = JSON.parse(JSON.stringify(s)) as AnyShape; });
-                         setDraggingHandle({ shapeId: hitId, handleIndex: 'move', originalShape: shapes.find(s=>s.id===hitId)!, groupOriginals });
-                         setDragStartPos(startWorld);
-                     } else {
-                         setSelectedShapeId(hitId); setHighlightedShapeIds(new Set([hitId]));
-                         setDraggingHandle({ shapeId: hitId, handleIndex: 'move', originalShape: JSON.parse(JSON.stringify(shapes.find(s=>s.id===hitId)!)) as AnyShape });
-                         setDragStartPos(startWorld);
-                     }
+                
+                // If we are already dragging a box, update it
+                if (selectionRect) {
+                     setSelectionRect({ ...selectionRect, width: worldPos.x - selectionRect.x, height: worldPos.y - selectionRect.y });
                 } else {
-                    setSelectionRect({ type: 'rectangle', id: 'selection', x: startWorld.x, y: startWorld.y, width: 0, height: 0, properties: { color: '', fill: '', strokeWidth: 0, lineType: 'solid' }});
+                    // Check if we dragged on empty space to start selection box
+                    // Also check if we are NOT inside a multi-selection box (if moving group)
+                    let isMovingGroup = false;
+                    if (selectedShapeIds.size > 1 && multiSelectionBounds) {
+                         const isInside = startWorld.x >= multiSelectionBounds.x && startWorld.x <= multiSelectionBounds.x + multiSelectionBounds.width &&
+                                          startWorld.y >= multiSelectionBounds.y && startWorld.y <= multiSelectionBounds.y + multiSelectionBounds.height;
+                         if(isInside) isMovingGroup = true;
+                    }
+                    
+                    const hitId = getHitTest(startWorld, 5 / viewTransform.scale);
+                    if (!hitId && !isMovingGroup) {
+                         setSelectionRect({ type: 'rectangle', id: 'selection', x: startWorld.x, y: startWorld.y, width: 0, height: 0, properties: { color: '', fill: '', strokeWidth: 0, lineType: 'solid' }});
+                    }
                 }
-                setDragStartScreenPos(null); 
-            } else { return; }
+            }
         }
 
         // ... Trim and Extend logic (preserved) ...
@@ -1086,7 +1468,7 @@ const Canvas: React.FC = () => {
                   if (targetShape) {
                        const seg = calculateTrimSegments(targetShape, worldPos);
                        if (seg) setHoveredTrimSegment({ shapeId: hitId, geometry: seg });
-                       else { if (targetShape.type === 'circle') setHoveredTrimSegment({ shapeId: hitId, geometry: { type: 'arc', cx: targetShape.cx, cy: targetShape.cy, r: targetShape.r, startAngle: targetShape.startAngle||0, endAngle: targetShape.endAngle||360 }}); }
+                       else setHoveredTrimSegment(null);
                   }
              } else { setHoveredTrimSegment(null); }
         }
@@ -1123,45 +1505,51 @@ const Canvas: React.FC = () => {
             setHoveredExtendPreview(extendCandidate);
         }
 
-        if (isInteractingRef.current || activeTool === 'move' || activeTool === 'rotate' || activeTool === 'trim' || activeTool === 'extend' || ['line', 'rectangle', 'circle', 'dimension', 'text', 'arc', 'title_block'].includes(activeTool) || draggingHandle) {
-            const snapThreshold = 10 / viewTransform.scale;
-            const inferenceThreshold = 20 / viewTransform.scale; 
+        const isRotating = activeTool === 'rotate' || draggingHandle?.handleIndex === 'rotate';
 
-            const hitId = getHitTest(worldPos, snapThreshold);
-            const ignoreId = draggingHandle?.shapeId || selectedShapeId;
-            if (hitId && hitId !== ignoreId) {
-                currentHoveredId = hitId;
-                const hoveredShape = shapes.find(s => s.id === hitId);
-                if (hoveredShape) {
-                    const snapPoints = getShapeSnapPoints(hoveredShape);
-                    let closestDist = Infinity;
-                    for (const sp of snapPoints) {
-                        if (snapModes.has(sp.type)) {
-                            const d = distance(worldPos, sp.point);
-                            if (d < snapThreshold && d < closestDist) { closestDist = d; currentSnapPoint = { point: sp.point, type: sp.type }; }
+        if (isInteractingRef.current || activeTool === 'move' || activeTool === 'rotate' || activeTool === 'trim' || activeTool === 'extend' || ['line', 'rectangle', 'circle', 'dimension', 'text', 'arc', 'title_block'].includes(activeTool) || draggingHandle) {
+            
+            // Disable snapping when rotating to prevent erratic jumping
+            if (!isRotating) {
+                const snapThreshold = 10 / viewTransform.scale;
+                const inferenceThreshold = 20 / viewTransform.scale; 
+
+                const hitId = getHitTest(worldPos, snapThreshold);
+                const ignoreId = draggingHandle?.shapeId || selectedShapeId;
+                if (hitId && hitId !== ignoreId) {
+                    currentHoveredId = hitId;
+                    const hoveredShape = shapes.find(s => s.id === hitId);
+                    if (hoveredShape) {
+                        const snapPoints = getShapeSnapPoints(hoveredShape);
+                        let closestDist = Infinity;
+                        for (const sp of snapPoints) {
+                            if (snapModes.has(sp.type)) {
+                                const d = distance(worldPos, sp.point);
+                                if (d < snapThreshold && d < closestDist) { closestDist = d; currentSnapPoint = { point: sp.point, type: sp.type }; }
+                            }
                         }
                     }
                 }
-            }
-             if (snapModes.has('inference')) {
-                const pointsToCheck = ignoreId ? allSnapPoints.filter(sp => sp.shapeId !== ignoreId) : allSnapPoints;
-                const SCREEN_PROXIMITY_LIMIT = 250; 
-                const worldProximityLimit = SCREEN_PROXIMITY_LIMIT / viewTransform.scale;
-                let bestXSnap: Point | null = null; let bestYSnap: Point | null = null; let minXDist = Infinity; let minYDist = Infinity;
-                for (const sp of pointsToCheck) {
-                    const dist = distance(worldPos, sp.point);
-                    if (dist > worldProximityLimit) continue;
-                    if (Math.abs(worldPos.x - sp.point.x) < inferenceThreshold) { if (dist < minXDist) { minXDist = dist; bestXSnap = sp.point; } }
-                    if (Math.abs(worldPos.y - sp.point.y) < inferenceThreshold) { if (dist < minYDist) { minYDist = dist; bestYSnap = sp.point; } }
+                 if (snapModes.has('inference')) {
+                    const pointsToCheck = ignoreId ? allSnapPoints.filter(sp => sp.shapeId !== ignoreId) : allSnapPoints;
+                    const SCREEN_PROXIMITY_LIMIT = 250; 
+                    const worldProximityLimit = SCREEN_PROXIMITY_LIMIT / viewTransform.scale;
+                    let bestXSnap: Point | null = null; let bestYSnap: Point | null = null; let minXDist = Infinity; let minYDist = Infinity;
+                    for (const sp of pointsToCheck) {
+                        const dist = distance(worldPos, sp.point);
+                        if (dist > worldProximityLimit) continue;
+                        if (Math.abs(worldPos.x - sp.point.x) < inferenceThreshold) { if (dist < minXDist) { minXDist = dist; bestXSnap = sp.point; } }
+                        if (Math.abs(worldPos.y - sp.point.y) < inferenceThreshold) { if (dist < minYDist) { minYDist = dist; bestYSnap = sp.point; } }
+                    }
+                    if (bestXSnap) { currentInferenceLines.push({id: 'inf-x', type: 'line', p1: bestXSnap, p2: {x: bestXSnap.x, y: worldPos.y}, properties: drawingProperties} as Line); finalPos.x = bestXSnap.x; }
+                    if (bestYSnap) { currentInferenceLines.push({id: 'inf-y', type: 'line', p1: bestYSnap, p2: {x: worldPos.x, y: bestYSnap.y}, properties: drawingProperties} as Line); finalPos.y = bestYSnap.y; }
+                    if (bestXSnap && bestYSnap) {
+                         currentInferenceLines = [ {id: 'inf-x', type: 'line', p1: bestXSnap, p2: {x: bestXSnap.x, y: bestYSnap.y}, properties: drawingProperties} as Line, {id: 'inf-y', type: 'line', p1: bestYSnap, p2: {x: bestXSnap.x, y: bestYSnap.y}, properties: drawingProperties} as Line ];
+                         finalPos = { x: bestXSnap.x, y: bestYSnap.y };
+                    }
                 }
-                if (bestXSnap) { currentInferenceLines.push({id: 'inf-x', type: 'line', p1: bestXSnap, p2: {x: bestXSnap.x, y: worldPos.y}, properties: drawingProperties} as Line); finalPos.x = bestXSnap.x; }
-                if (bestYSnap) { currentInferenceLines.push({id: 'inf-y', type: 'line', p1: bestYSnap, p2: {x: worldPos.x, y: bestYSnap.y}, properties: drawingProperties} as Line); finalPos.y = bestYSnap.y; }
-                if (bestXSnap && bestYSnap) {
-                     currentInferenceLines = [ {id: 'inf-x', type: 'line', p1: bestXSnap, p2: {x: bestXSnap.x, y: bestYSnap.y}, properties: drawingProperties} as Line, {id: 'inf-y', type: 'line', p1: bestYSnap, p2: {x: bestXSnap.x, y: bestYSnap.y}, properties: drawingProperties} as Line ];
-                     finalPos = { x: bestXSnap.x, y: bestYSnap.y };
-                }
+                if (currentSnapPoint) { finalPos = currentSnapPoint.point; currentInferenceLines = []; }
             }
-            if (currentSnapPoint) { finalPos = currentSnapPoint.point; currentInferenceLines = []; }
         }
         
         setHoveredShapeId(currentHoveredId); setActiveSnapPoint(currentSnapPoint); setInferenceLines(currentInferenceLines);
@@ -1182,7 +1570,9 @@ const Canvas: React.FC = () => {
         if (draggingHandle) {
              const { shapeId, handleIndex, originalShape } = draggingHandle;
             if (handleIndex === 'rotate') return;
-            if (handleIndex === 'move' && dragStartPos) { return; }
+            // Removed early return for 'move' to allow snap calculation above to persist
+            if (handleIndex === 'move') return;
+            
             if (typeof handleIndex !== 'number') return;
             
             const previewShape = JSON.parse(JSON.stringify(originalShape)) as AnyShape;
@@ -1213,7 +1603,6 @@ const Canvas: React.FC = () => {
 
         if (isInteractingRef.current) {
             if (activeTool === 'copy-area' && selectionRect) { setSelectionRect({ ...selectionRect, width: worldPos.x - selectionRect.x, height: worldPos.y - selectionRect.y }); } 
-            else if (activeTool === 'select' && selectionRect) { setSelectionRect({ ...selectionRect, width: worldPos.x - selectionRect.x, height: worldPos.y - selectionRect.y }); } 
             else if (currentShape) {
                  if(currentShape.type === 'line') { const constrained = applyConstraints(currentShape.p1!, finalPos, e.shiftKey); setCurrentShape({ ...currentShape, p2: constrained }); }
                  else if (currentShape.type === 'rectangle') { const start = {x: currentShape.x!, y: currentShape.y!}; let w = finalPos.x - start.x; let h = finalPos.y - start.y; if(e.shiftKey) { const max = Math.max(Math.abs(w), Math.abs(h)); w = w<0?-max:max; h = h<0?-max:max; } setCurrentShape({ ...currentShape, width: w, height: h }); } 
@@ -1237,24 +1626,67 @@ const Canvas: React.FC = () => {
     };
     
     // ... PointerUp & Wheel (preserved) ...
-    const handlePointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
-        try { if (e.currentTarget && e.currentTarget.hasPointerCapture && e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) { }
+    const handlePointerUp = (e: ReactPointerEvent<SVGSVGElement> | PointerEvent) => {
+        if (hasHandledUpRef.current) return;
+        hasHandledUpRef.current = true;
+
+        // Safe release of capture
+        if (svgRef.current && svgRef.current.hasPointerCapture && (e as any).pointerId) {
+             try { svgRef.current.releasePointerCapture((e as any).pointerId); } catch(err){}
+        }
+
+        // Use svgRef instead of currentTarget to ensure we have the element even on global window events
+        if (!svgRef.current) return;
+        const rect = svgRef.current.getBoundingClientRect();
+        
+        // Handle coordinates safely
+        const clientX = (e as any).clientX;
+        const clientY = (e as any).clientY;
+        const localMousePos = { x: clientX - rect.left, y: clientY - rect.top };
+        
         if (draggingHandle?.handleIndex === 'move' && dragStartPos) {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const localMousePos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
             let finalPos = screenToWorld(localMousePos);
+            // Re-check snap on release to be sure
             if (activeSnapPoint) finalPos = activeSnapPoint.point;
+            
             const delta = subtract(finalPos, dragStartPos);
-            if (magnitude(delta) > 0.1) {
+            // Commit only if significant move occurred (prevent accidental micro-shifts) and coordinates are safe
+            if (magnitude(delta) > 0.1 && Number.isFinite(delta.x) && Number.isFinite(delta.y)) {
                 const { groupOriginals, shapeId, originalShape } = draggingHandle;
+                
+                // CRITICAL FIX: Use batch updates instead of looping updateShape
+                // iterating updateShape causes race conditions with state
+                const batchUpdates: { id: string, updates: AnyShapePropertyUpdates }[] = [];
+                
+                // Safely iterate group items
                 const itemsToMove: [string, AnyShape][] = groupOriginals ? Object.entries(groupOriginals) : [[shapeId, originalShape]];
+                
                 itemsToMove.forEach(([id, origShape]) => {
-                     const s = origShape as AnyShape; const updates: AnyShapePropertyUpdates = {};
-                     if (s.type === 'line' || s.type === 'dimension') { updates.p1 = add(s.p1, delta); updates.p2 = add(s.p2, delta); if(s.type === 'dimension') updates.offsetPoint = add(s.offsetPoint, delta); } 
-                     else if (s.type === 'rectangle' || s.type === 'text' || s.type === 'symbol' || s.type === 'title_block') { updates.x = s.x + delta.x; updates.y = s.y + delta.y; } 
-                     else if (s.type === 'circle') { updates.cx = s.cx + delta.x; updates.cy = s.cy + delta.y; }
-                     updateShape(id, updates);
+                     // Ensure origShape is valid before update
+                     if (!origShape) return;
+                     const s = origShape as AnyShape; 
+                     const updates: AnyShapePropertyUpdates = {};
+                     
+                     if (s.type === 'line' || s.type === 'dimension') { 
+                         updates.p1 = add(s.p1, delta); 
+                         updates.p2 = add(s.p2, delta); 
+                         if(s.type === 'dimension') updates.offsetPoint = add(s.offsetPoint, delta); 
+                     } 
+                     else if (s.type === 'rectangle' || s.type === 'text' || s.type === 'symbol' || s.type === 'title_block') { 
+                         updates.x = s.x + delta.x; 
+                         updates.y = s.y + delta.y; 
+                     } 
+                     else if (s.type === 'circle') { 
+                         updates.cx = s.cx + delta.x; 
+                         updates.cy = s.cy + delta.y; 
+                     }
+                     
+                     batchUpdates.push({ id, updates });
                 });
+                
+                if (batchUpdates.length > 0) {
+                    updateShapes(batchUpdates);
+                }
             }
         }
         if (draggingHandle?.currentPreview && typeof draggingHandle.handleIndex === 'number') {
@@ -1264,27 +1696,125 @@ const Canvas: React.FC = () => {
              else if (currentPreview.type === 'circle') { updates.cx = currentPreview.cx; updates.cy = currentPreview.cy; updates.r = currentPreview.r; }
              updateShape(shapeId, updates);
         }
-        if (activeTool === 'select' && dragStartScreenPos && !draggingHandle && !selectionRect) {
-             const startWorld = screenToWorld(dragStartScreenPos); const hitId = getHitTest(startWorld, 5 / viewTransform.scale);
-             if (hitId) { if (e.shiftKey) { const newSet = new Set(highlightedShapeIds); if (newSet.has(hitId)) newSet.delete(hitId); else newSet.add(hitId); setHighlightedShapeIds(newSet); if (newSet.size === 1) setSelectedShapeId(Array.from(newSet)[0]); } else { setSelectedShapeId(hitId); setHighlightedShapeIds(new Set([hitId])); } } else { setSelectedShapeId(null); setHighlightedShapeIds(new Set()); }
-        }
-        if (activeTool === 'move' && moveBasePoint) return;
-        if (activeTool === 'arc' && arcStep > 0) return;
-        if ((activeTool === 'rotate' || draggingHandle?.handleIndex === 'rotate') && rotateState && selectedShapeId) {
-             const currentAngle = angle(subtract(worldMousePos, rotateState.center)); const deltaAngle = currentAngle - rotateState.startAngle; const shape = shapes.find(s => s.id === selectedShapeId);
-             if (shape) { const updates: AnyShapePropertyUpdates = {}; if (shape.type === 'rectangle' || shape.type === 'symbol' || shape.type === 'text') { updates.rotation = (rotateState.initialRotation + deltaAngle) % 360; } else if ((shape.type === 'line' || shape.type === 'dimension') && rotateState.originalShape) { const orig = rotateState.originalShape as (Line | Dimension); const rotateP = (p: Point) => rotatePoint(p, rotateState.center, deltaAngle); updates.p1 = rotateP(orig.p1); updates.p2 = rotateP(orig.p2); if (shape.type === 'dimension' && 'offsetPoint' in orig) updates.offsetPoint = rotateP((orig as Dimension).offsetPoint); } if (Object.keys(updates).length > 0) updateShape(selectedShapeId, updates); }
-             setRotateState(null); if (draggingHandle?.handleIndex === 'rotate') setDraggingHandle(null); return;
-        }
-        if (activeTool === 'dimension' && dimensionStep === 2) return;
-        if ((activeTool === 'copy-area' || activeTool === 'select') && selectionRect) {
+
+        // Logic for Selection Box completion
+        const worldPos = screenToWorld(localMousePos);
+        if ((activeTool === 'select' || activeTool === 'copy-area') && selectionRect) {
              const normalizedRect = { x: selectionRect.width < 0 ? selectionRect.x + selectionRect.width : selectionRect.x, y: selectionRect.height < 0 ? selectionRect.y + selectionRect.height : selectionRect.y, width: Math.abs(selectionRect.width), height: Math.abs(selectionRect.height) };
             if (normalizedRect.width > 1 && normalizedRect.height > 1) {
                 const shapesToProcess = shapes.filter(s => isShapeInBounds(s, normalizedRect as Rectangle));
-                if (shapesToProcess.length > 0) { if (activeTool === 'copy-area') { setClipboard({ shapes: shapesToProcess, origin: { x: normalizedRect.x + normalizedRect.width / 2, y: normalizedRect.y + normalizedRect.height / 2 } }); setHighlightedShapeIds(new Set(shapesToProcess.map(s => s.id))); } else { setHighlightedShapeIds(new Set(shapesToProcess.map(s => s.id))); if(shapesToProcess.length === 1) setSelectedShapeId(shapesToProcess[0].id); } }
-            } else if (activeTool === 'select' && !dragStartScreenPos) { setSelectedShapeId(null); setHighlightedShapeIds(new Set()); }
+                if (shapesToProcess.length > 0) { 
+                    if (activeTool === 'copy-area') { 
+                        setClipboard({ shapes: shapesToProcess, origin: { x: normalizedRect.x + normalizedRect.width / 2, y: normalizedRect.y + normalizedRect.height / 2 } }); 
+                        // Optional: temporarily highlight
+                        setSelectedShapeIds(new Set(shapesToProcess.map(s => s.id)));
+                    } else { 
+                        // Multi-Select Box
+                        const newSelection = new Set(e.shiftKey ? selectedShapeIds : []);
+                        shapesToProcess.forEach(s => newSelection.add(s.id));
+                        setSelectedShapeIds(newSelection);
+                    } 
+                } else if (!e.shiftKey && activeTool === 'select') {
+                    // Clicked empty space with box logic but found nothing
+                     setSelectedShapeIds(new Set());
+                }
+            } else if (activeTool === 'select' && !dragStartScreenPos && !e.shiftKey) { 
+                 // Simple click on nothing
+                 setSelectedShapeIds(new Set()); 
+            }
             setSelectionRect(null); if (activeTool === 'copy-area') setActiveTool('select');
         }
+
+        if (activeTool === 'move' && moveBasePoint) {
+            // Apply Move Tool logic (only if significantly moved)
+            // If delta is 0, user just clicked base point, so DO NOT clear moveBasePoint yet.
+            const targetPoint = activeSnapPoint ? activeSnapPoint.point : worldPos;
+            const delta = subtract(targetPoint, moveBasePoint);
+            if (magnitude(delta) > 0.1 && Number.isFinite(delta.x) && Number.isFinite(delta.y)) {
+                
+                // CRITICAL FIX: Use batch updates
+                const batchUpdates: { id: string, updates: AnyShapePropertyUpdates }[] = [];
+                
+                Array.from(selectedShapeIds).forEach(id => {
+                    const shape = shapes.find(s => s.id === id); if (!shape) return;
+                    const updates: AnyShapePropertyUpdates = {};
+                    if (shape.type === 'line' || shape.type === 'dimension') { updates.p1 = add(shape.p1, delta); updates.p2 = add(shape.p2, delta); if (shape.type === 'dimension') updates.offsetPoint = add(shape.offsetPoint, delta); }
+                    else if (shape.type === 'rectangle' || shape.type === 'text' || shape.type === 'symbol' || shape.type === 'title_block') { updates.x = shape.x + delta.x; updates.y = shape.y + delta.y; }
+                    else if (shape.type === 'circle') { updates.cx = shape.cx + delta.x; updates.cy = shape.cy + delta.y; }
+                    batchUpdates.push({ id, updates });
+                });
+                
+                if (batchUpdates.length > 0) updateShapes(batchUpdates);
+                setMoveBasePoint(null); // Clear base point after successful move
+            }
+            // If delta ~ 0, we treat it as the first click (Base Point Set in PointerDown), so we keep waiting for second click or drag.
+        }
+        
+        if (activeTool === 'arc' && arcStep > 0) return;
+        
+        // COMMIT ROTATION
+        if ((activeTool === 'rotate' || draggingHandle?.handleIndex === 'rotate') && rotateState) {
+             const currentAngle = angle(subtract(worldPos, rotateState.center)); 
+             // FIX: Reversed calculation to match mouse movement. Positive = CCW.
+             let deltaAngle = currentAngle - rotateState.startAngle; 
+             
+             // Normalize angle to handle wrapping (e.g. 350 -> 10 should be +20, not -340)
+             if (deltaAngle > 180) deltaAngle -= 360;
+             if (deltaAngle < -180) deltaAngle += 360;
+
+             // Commit rotation using BATCH UPDATES
+             const batchUpdates: { id: string, updates: AnyShapePropertyUpdates }[] = [];
+
+             Object.entries(rotateState.groupOriginals).forEach(([id, original]) => {
+                 const updates: AnyShapePropertyUpdates = {};
+                 
+                 if (original.type === 'rectangle' || original.type === 'symbol' || original.type === 'text' || original.type === 'title_block') {
+                      const origRot = 'rotation' in original ? (original.rotation || 0) : 0;
+                      updates.rotation = (origRot + deltaAngle) % 360;
+                      
+                      // Also rotate position if we are in a group (orbit around center)
+                      let shapeCenter = {x: 0, y: 0};
+                      if (original.type === 'rectangle' || original.type === 'title_block') {
+                           shapeCenter = { x: original.x + original.width/2, y: original.y + original.height/2 };
+                      } else {
+                           shapeCenter = { x: original.x, y: original.y };
+                      }
+                      
+                      const newCenter = rotatePoint(shapeCenter, rotateState.center, deltaAngle);
+                      if (original.type === 'rectangle' || original.type === 'title_block') {
+                           updates.x = newCenter.x - original.width/2;
+                           updates.y = newCenter.y - original.height/2;
+                      } else {
+                           updates.x = newCenter.x;
+                           updates.y = newCenter.y;
+                      }
+                 } else if (original.type === 'line' || original.type === 'dimension') { 
+                      const rotateP = (p: Point) => rotatePoint(p, rotateState.center, deltaAngle); 
+                      updates.p1 = rotateP(original.p1); 
+                      updates.p2 = rotateP(original.p2); 
+                      if (original.type === 'dimension' && 'offsetPoint' in original) updates.offsetPoint = rotateP((original as Dimension).offsetPoint); 
+                 } else if (original.type === 'circle') {
+                      const newCenter = rotatePoint({x: original.cx, y: original.cy}, rotateState.center, deltaAngle);
+                      updates.cx = newCenter.x;
+                      updates.cy = newCenter.y;
+                 }
+                 
+                 batchUpdates.push({ id, updates });
+             });
+
+             if (batchUpdates.length > 0) updateShapes(batchUpdates);
+
+             setRotateState(null); 
+             if (draggingHandle?.handleIndex === 'rotate') setDraggingHandle(null); 
+             return;
+        }
+
+        if (activeTool === 'dimension' && dimensionStep === 2) return;
+        
         isInteractingRef.current = false; setPanStart(null); setDraggingHandle(null); setDragStartPos(null); setDragStartScreenPos(null);
+        // Do NOT clear moveBasePoint here blindly, handled above
+        if (activeTool !== 'move') setMoveBasePoint(null);
+
         if (currentShape && activeTool !== 'dimension') {
             if (currentShape.type === 'line' && distance(currentShape.p1!, currentShape.p2!) > 0.1) addShape(currentShape as Omit<Line, 'id'>);
             else if (currentShape.type === 'rectangle' && currentShape.width! !== 0 && currentShape.height! !== 0) { const newRect: Omit<Rectangle, 'id'> = { type: 'rectangle', x: currentShape.width! < 0 ? currentShape.x! + currentShape.width! : currentShape.x!, y: currentShape.height! < 0 ? currentShape.y! + currentShape.height! : currentShape.y!, width: Math.abs(currentShape.width!), height: Math.abs(currentShape.height!), properties: currentShape.properties as DrawingProperties, rotation: 0 }; addShape(newRect); } else if (currentShape.type === 'circle' && currentShape.r! > 0.1) addShape(currentShape as Omit<Circle, 'id'>);
@@ -1306,7 +1836,7 @@ const Canvas: React.FC = () => {
     };
     
     const cursor = panStart ? 'grabbing' : activeTool === 'pan' ? 'grab' : activeTool === 'select' ? 'default' : (activeTool === 'copy-area' || activeTool === 'trim' || activeTool === 'extend') ? 'crosshair' : activeTool === 'text' ? 'text' : activeTool === 'paste' ? 'copy' : activeTool === 'move' ? 'default' : activeTool === 'rotate' ? 'alias' : activeTool === 'title_block' ? 'copy' : 'none';
-
+    
     return (
         <div className="flex-grow bg-dark-base-200 overflow-hidden relative" onWheel={handleWheel}>
             <svg 
@@ -1334,18 +1864,41 @@ const Canvas: React.FC = () => {
                     <rect width="50000" height="50000" x="-25000" y="-25000" fill="url(#grid)" />
                      <circle cx="0" cy="0" r={3 / viewTransform.scale} fill="red" />
                     
+                    {/* --- MAIN SHAPES RENDER LOOP --- */}
                     {shapes.map(shape => {
-                         if (draggingHandle?.shapeId === shape.id && draggingHandle.currentPreview) { return <ShapeRenderer key={shape.id} shape={draggingHandle.currentPreview} isSelected={true} conversionFactor={conversionFactor} isPreview={true} />; }
-                        if (selectedShapeId === shape.id) {
-                            if (activeTool === 'rotate' && rotateState) return null;
-                            if (activeTool === 'move' && moveBasePoint && highlightedShapeIds.has(shape.id)) return <ShapeRenderer key={shape.id} shape={shape} isSelected={true} conversionFactor={conversionFactor} isGhost={true} />;
-                            if (activeTool === 'move' && moveBasePoint && !highlightedShapeIds.has(shape.id)) return <ShapeRenderer key={shape.id} shape={shape} isSelected={true} conversionFactor={conversionFactor} isGhost={true} />;
-                            if (draggingHandle?.handleIndex === 'rotate' && rotateState) return null;
-                        }
-                        const isHighlighted = highlightedShapeIds.has(shape.id);
-                        if (draggingHandle?.handleIndex === 'move' && highlightedShapeIds.has(shape.id)) return <ShapeRenderer key={shape.id} shape={shape} isSelected={shape.id === selectedShapeId} isHighlighted={true} conversionFactor={conversionFactor} isGhost={false} />;
-                        if (activeTool === 'move' && moveBasePoint && isHighlighted) return <ShapeRenderer key={shape.id} shape={shape} isSelected={shape.id === selectedShapeId} isHighlighted={true} conversionFactor={conversionFactor} isGhost={true} />;
-                        return <ShapeRenderer key={shape.id} shape={shape} isSelected={shape.id === selectedShapeId} isHighlighted={isHighlighted} conversionFactor={conversionFactor} />
+                         const isSelected = selectedShapeIds.has(shape.id);
+
+                         // Check if this shape is part of an active drag/rotate operation
+                         let isBeingManipulated = false;
+                         
+                         // Case A: Dragging Handle (Move or Resize)
+                         if (draggingHandle) {
+                             if (draggingHandle.handleIndex === 'move' && draggingHandle.groupOriginals && draggingHandle.groupOriginals[shape.id]) {
+                                 isBeingManipulated = true;
+                             } else if (typeof draggingHandle.handleIndex === 'number' && draggingHandle.shapeId === shape.id) {
+                                 // Resizing single shape: Replace with preview
+                                 if (draggingHandle.currentPreview) return <ShapeRenderer key={shape.id} shape={draggingHandle.currentPreview} isSelected={true} conversionFactor={conversionFactor} isPreview={true} />; 
+                             }
+                         }
+                         
+                         // Case B: Rotate Tool or Handle
+                         if (rotateState && rotateState.groupOriginals[shape.id]) {
+                             isBeingManipulated = true;
+                         }
+                         
+                         // Case C: Move Tool (Explicit)
+                         if (activeTool === 'move' && moveBasePoint && isSelected) {
+                              isBeingManipulated = true;
+                         }
+                         
+                         // If being manipulated, render ORIGINAL at LOW opacity (Ghost).
+                         // Use 0.5 opacity so it is clearly visible as the "source" position.
+                         if (isBeingManipulated) {
+                             return <ShapeRenderer key={shape.id} shape={shape} isSelected={false} conversionFactor={conversionFactor} opacity={0.5} />; 
+                         }
+                        
+                        // Default Render (Originals during normal state)
+                        return <ShapeRenderer key={shape.id} shape={shape} isSelected={isSelected} isHighlighted={false} conversionFactor={conversionFactor} />
                     })}
 
                     {currentShape && <ShapeRenderer shape={currentShape as AnyShape} isSelected={false} conversionFactor={conversionFactor} />}
@@ -1359,7 +1912,28 @@ const Canvas: React.FC = () => {
                     
                      {hoveredShapeId && (() => { const shape = shapes.find(s => s.id === hoveredShapeId); if (!shape) return null; return getShapeSnapPoints(shape).map((sp, i) => ( <circle key={i} cx={sp.point.x} cy={sp.point.y} r={5 / viewTransform.scale} fill="cyan" fillOpacity="0.5" /> )); })()}
                     
-                    {selectedShapeId && (() => { const s=shapes.find(x=>x.id===selectedShapeId); return s ? getShapeSnapPoints(s).map((sp, i) => (<circle key={`node-${i}`} cx={sp.point.x} cy={sp.point.y} r={5 / viewTransform.scale} fill="white" stroke="#00A8FF" strokeWidth={1.5 / viewTransform.scale} />)) : null })()}
+                    {/* Render snap points for SINGLE selected shape to avoid clutter */}
+                    {selectedShapeId && selectedShapeIds.size === 1 && (() => { const s=shapes.find(x=>x.id===selectedShapeId); return s ? getShapeSnapPoints(s).map((sp, i) => (<circle key={`node-${i}`} cx={sp.point.x} cy={sp.point.y} r={5 / viewTransform.scale} fill="white" stroke="#00A8FF" strokeWidth={1.5 / viewTransform.scale} />)) : null })()}
+
+                    {/* Multi-Selection Bounding Box & Rotation Handle */}
+                    {multiSelectionBounds && !rotateState && (() => {
+                        const { x, y, width, height } = multiSelectionBounds;
+                        const centerX = x + width / 2;
+                        const handleY = y - 30 / viewTransform.scale;
+                        
+                        return (
+                             <g>
+                                <rect 
+                                    x={x} y={y} 
+                                    width={width} height={height} 
+                                    fill="none" stroke="#00A8FF" strokeWidth={1.5 / viewTransform.scale} strokeDasharray={`${5/viewTransform.scale} ${5/viewTransform.scale}`} 
+                                />
+                                {/* Group Rotation Handle */}
+                                <line x1={centerX} y1={y} x2={centerX} y2={handleY} stroke="#00A8FF" strokeWidth={1.5 / viewTransform.scale} vectorEffect="non-scaling-stroke" />
+                                <circle cx={centerX} cy={handleY} r={4 / viewTransform.scale} fill="white" stroke="#00A8FF" strokeWidth={1.5 / viewTransform.scale} style={{cursor: 'grab'}} vectorEffect="non-scaling-stroke" />
+                             </g>
+                        );
+                    })()}
 
                     {activeSnapPoint && ( <g> <circle cx={activeSnapPoint.point.x} cy={activeSnapPoint.point.y} r={8 / viewTransform.scale} fill="magenta" fillOpacity="0.7"/> <circle cx={activeSnapPoint.point.x} cy={activeSnapPoint.point.y} r={1.5 / viewTransform.scale} fill="white"/> </g> )}
                     
@@ -1373,14 +1947,32 @@ const Canvas: React.FC = () => {
                     })()}
 
                     {activeTool === 'trim' && hoveredTrimSegment && (() => {
-                         const { geometry } = hoveredTrimSegment; const s = 4 / viewTransform.scale;
+                         const { geometry } = hoveredTrimSegment; 
+                         const s = 4 / viewTransform.scale;
+                         const crossSize = 10 / viewTransform.scale;
+                         const crossProps = { stroke: "red", strokeWidth: 2 / viewTransform.scale };
+                         
+                         let segmentRender = null;
                          if (geometry.type === 'line') {
-                             const p1 = geometry.p1; const p2 = geometry.p2; const midX = (p1.x + p2.x) / 2; const midY = (p1.y + p2.y) / 2;
-                             return ( <g> <line key="trim-hover" x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="red" strokeWidth={4 / viewTransform.scale} strokeLinecap="round" opacity="0.7" /> <line x1={midX - s} y1={midY - s} x2={midX + s} y2={midY + s} stroke="white" strokeWidth={2 / viewTransform.scale} /> <line x1={midX + s} y1={midY - s} x2={midX - s} y2={midY + s} stroke="white" strokeWidth={2 / viewTransform.scale} /> </g> );
+                             const p1 = geometry.p1; const p2 = geometry.p2; 
+                             // Calculate interpolated start/end points based on tMin/tMax
+                             const vec = subtract(p2, p1);
+                             const start = add(p1, scale(vec, geometry.tMin));
+                             const end = add(p1, scale(vec, geometry.tMax));
+                             
+                             segmentRender = <line key="trim-hover" x1={start.x} y1={start.y} x2={end.x} y2={end.y} stroke="red" strokeWidth={4 / viewTransform.scale} strokeLinecap="round" strokeDasharray={`${10/viewTransform.scale} ${5/viewTransform.scale}`} opacity="0.8" />;
                          } else {
                              const { cx, cy, r, startAngle, endAngle } = geometry;
-                             return ( <g> <path d={describeArc(cx, cy, r, startAngle, endAngle)} stroke="red" strokeWidth={4 / viewTransform.scale} fill="none" opacity="0.7" /> </g> )
+                             segmentRender = <path d={describeArc(cx, cy, r, startAngle, endAngle)} stroke="red" strokeWidth={4 / viewTransform.scale} strokeDasharray={`${10/viewTransform.scale} ${5/viewTransform.scale}`} fill="none" opacity="0.8" />;
                          }
+
+                         return ( 
+                            <g> 
+                                {segmentRender}
+                                <line x1={worldMousePos.x - crossSize/2} y1={worldMousePos.y - crossSize/2} x2={worldMousePos.x + crossSize/2} y2={worldMousePos.y + crossSize/2} {...crossProps} />
+                                <line x1={worldMousePos.x + crossSize/2} y1={worldMousePos.y - crossSize/2} x2={worldMousePos.x - crossSize/2} y2={worldMousePos.y + crossSize/2} {...crossProps} />
+                            </g> 
+                         );
                     })()}
 
                     {activeTool === 'extend' && hoveredExtendPreview && (() => { const { originalShape, newEndpoint, endToUpdate } = hoveredExtendPreview; const start = endToUpdate === 'p1' ? originalShape.p1 : originalShape.p2; return ( <g> <line x1={start.x} y1={start.y} x2={newEndpoint.x} y2={newEndpoint.y} stroke="lime" strokeWidth={2 / viewTransform.scale} strokeDasharray={`${4/viewTransform.scale}`} /> <circle cx={newEndpoint.x} cy={newEndpoint.y} r={4 / viewTransform.scale} fill="lime" /> </g> ) })()}
@@ -1397,46 +1989,71 @@ const Canvas: React.FC = () => {
                         return <ShapeRenderer key={'preview-' + shape.id} shape={newShape} isSelected={false} conversionFactor={conversionFactor} isPreview={true} />
                     })}
                     
+                    {/* --- PREVIEW: DRAG MOVE (Select Tool) using SVG TRANSFORM --- */}
                     {(draggingHandle?.handleIndex === 'move' && draggingHandle.groupOriginals && dragStartPos) ? (() => {
-                         const handle = draggingHandle!; const currentPos = activeSnapPoint ? activeSnapPoint.point : worldMousePos; const delta = subtract(currentPos, dragStartPos); const groupOriginals = handle.groupOriginals as Record<string, AnyShape>;
-                         return Object.keys(groupOriginals).map((id) => {
-                            const shape = groupOriginals[id]; const previewShape = JSON.parse(JSON.stringify(shape)) as unknown as AnyShape;
-                            if (previewShape.type === 'line') { previewShape.p1 = add(previewShape.p1, delta); previewShape.p2 = add(previewShape.p2, delta); } 
-                            else if (previewShape.type === 'dimension') { previewShape.p1 = add(previewShape.p1, delta); previewShape.p2 = add(previewShape.p2, delta); previewShape.offsetPoint = add(previewShape.offsetPoint, delta); } 
-                            else if (previewShape.type === 'rectangle' || previewShape.type === 'text' || previewShape.type === 'symbol' || previewShape.type === 'title_block') { previewShape.x += delta.x; previewShape.y += delta.y; } 
-                            else if (previewShape.type === 'circle') { previewShape.cx += delta.x; previewShape.cy += delta.y; }
-                            return <ShapeRenderer key={'preview-drag-' + id} shape={previewShape} isSelected={false} conversionFactor={conversionFactor} isPreview={true} />
-                         });
+                         // Critical Fix: Pass dragStartPos directly and calculate delta safely to prevent disappearing elements
+                         const currentPos = activeSnapPoint ? activeSnapPoint.point : worldMousePos; 
+                         const delta = subtract(currentPos, dragStartPos); 
+                         const safeX = Number.isFinite(delta.x) ? delta.x : 0;
+                         const safeY = Number.isFinite(delta.y) ? delta.y : 0;
+                         
+                         // Ensure groupOriginals are valid
+                         const shapesToPreview = Object.values(draggingHandle.groupOriginals).filter(s => !!s);
+                         if (shapesToPreview.length === 0) return null;
+
+                         return (
+                            <g transform={`translate(${safeX} ${safeY})`} style={{pointerEvents: 'none'}}>
+                                {shapesToPreview.map((shape) => (
+                                    <ShapeRenderer key={'preview-drag-' + shape.id} shape={shape} isSelected={false} conversionFactor={conversionFactor} isPreview={true} />
+                                ))}
+                            </g>
+                         );
                     })() : null}
 
+                    {/* --- PREVIEW: MOVE TOOL (Click-Click) using SVG TRANSFORM --- */}
                     {(activeTool === 'move' && moveBasePoint) ? (() => {
-                        const snapPos = activeSnapPoint ? activeSnapPoint.point : worldMousePos; const delta = subtract(snapPos, moveBasePoint); const idsToPreview = highlightedShapeIds.size > 0 ? Array.from(highlightedShapeIds) : (selectedShapeId ? [selectedShapeId] : []);
-                        return idsToPreview.map(id => {
-                            const original = shapes.find(s => s.id === id); if (!original) return null;
-                            const previewShape = JSON.parse(JSON.stringify(original)) as unknown as AnyShape;
-                            if (previewShape.type === 'line' || previewShape.type === 'dimension') { previewShape.p1 = add(previewShape.p1, delta); previewShape.p2 = add(previewShape.p2, delta); if (previewShape.type === 'dimension') { previewShape.offsetPoint = add(previewShape.offsetPoint, delta); } } 
-                            else if (previewShape.type === 'rectangle' || previewShape.type === 'text' || previewShape.type === 'symbol' || previewShape.type === 'title_block') { previewShape.x += delta.x; previewShape.y += delta.y; } 
-                            else if (previewShape.type === 'circle') { previewShape.cx += delta.x; previewShape.cy += delta.y; }
-                            return <ShapeRenderer key={'preview-trans-' + id} shape={previewShape} isSelected={false} conversionFactor={conversionFactor} isPreview={true} />
-                        });
+                        const snapPos = activeSnapPoint ? activeSnapPoint.point : worldMousePos; 
+                        const delta = subtract(snapPos, moveBasePoint); 
+                        const safeX = Number.isFinite(delta.x) ? delta.x : 0;
+                        const safeY = Number.isFinite(delta.y) ? delta.y : 0;
+
+                        return (
+                             <g transform={`translate(${safeX} ${safeY})`} style={{pointerEvents: 'none'}}>
+                                {Array.from(selectedShapeIds).map(id => {
+                                    const shape = shapes.find(s => s.id === id); 
+                                    if (!shape) return null;
+                                    return <ShapeRenderer key={'preview-trans-' + id} shape={shape} isSelected={false} conversionFactor={conversionFactor} isPreview={true} />
+                                })}
+                             </g>
+                        );
                     })() : null}
                     
-                    {((activeTool === 'rotate' || draggingHandle?.handleIndex === 'rotate') && rotateState && selectedShapeId) ? (() => {
-                         const s = shapes.find(x=>x.id===selectedShapeId); if(!s) return null;
-                         const previewShape = JSON.parse(JSON.stringify(s)) as AnyShape;
+                    {/* --- PREVIEW: ROTATE using SVG TRANSFORM --- */}
+                    {(rotateState) ? (() => {
                          const currentAngle = angle(subtract(worldMousePos, rotateState.center));
-                         const deltaAngle = currentAngle - rotateState.startAngle;
-                         if (previewShape.type === 'rectangle' || previewShape.type === 'symbol' || previewShape.type === 'text' || previewShape.type === 'title_block') { previewShape.rotation = (rotateState.initialRotation + deltaAngle) % 360; } 
-                         else if (previewShape.type === 'line' || previewShape.type === 'dimension') { const orig = rotateState.originalShape as (Line | Dimension); const rotateP = (p: Point) => rotatePoint(p, rotateState.center, deltaAngle); previewShape.p1 = rotateP(orig.p1); previewShape.p2 = rotateP(orig.p2); if (previewShape.type === 'dimension' && 'offsetPoint' in orig) previewShape.offsetPoint = rotateP((orig as Dimension).offsetPoint); }
-                         return <ShapeRenderer key={'preview-rot'} shape={previewShape} isSelected={false} conversionFactor={conversionFactor} isPreview={true} />
+                         // FIX: Delta is CCW (Standard Math).
+                         let deltaAngle = currentAngle - rotateState.startAngle;
+                         if (deltaAngle > 180) deltaAngle -= 360;
+                         if (deltaAngle < -180) deltaAngle += 360;
+
+                         const safeAngle = Number.isFinite(deltaAngle) ? deltaAngle : 0;
+                         // SVG Rotation is CW. So we render with -safeAngle (CCW).
+                         
+                         return (
+                             <g transform={`rotate(${-safeAngle} ${rotateState.center.x} ${rotateState.center.y})`} style={{pointerEvents: 'none'}}>
+                                 {Object.values(rotateState.groupOriginals).map((shape) => (
+                                      <ShapeRenderer key={'preview-rot-' + shape.id} shape={shape} isSelected={false} conversionFactor={conversionFactor} isPreview={true} />
+                                 ))}
+                             </g>
+                         );
                     })() : null}
                 </g>
             </svg>
             <div className="pointer-events-none absolute inset-0">
                 {cursor === 'none' && ( <svg width="100%" height="100%" style={{ position: 'absolute', top: 0, left: 0 }}> <rect x={mousePosition.x - 10} y={mousePosition.y - 10} width="20" height="20" fill="none" stroke="white" strokeWidth="0.5" /> <line x1={mousePosition.x} y1={0} x2={mousePosition.x} y2={5000} stroke="white" strokeWidth="0.5" /> <line x1={0} y1={mousePosition.y} x2={5000} y2={mousePosition.y} stroke="white" strokeWidth="0.5" /> </svg> )}
                 {(isInteractingRef.current && (currentShape?.type === 'line' || currentShape?.type === 'dimension') && currentShape.p1) && ( <div className="absolute px-2 py-1 bg-blue-600 text-white text-xs rounded" style={{ left: mousePosition.x + 20, top: mousePosition.y + 20 }}> {`L: ${(distance(currentShape.p1!, worldMousePos) / conversionFactor).toFixed(2)} ${unit} | A: ${angleBetween(currentShape.p1!, worldMousePos).toFixed(2)}°`} </div> )}
-                {selectedShapeId && (() => { const s=shapes.find(x=>x.id===selectedShapeId); if(s && (s.type === 'line' || s.type === 'dimension')) return ( <div className="absolute px-2 py-1 bg-blue-600 text-white text-xs rounded" style={{ left: (s.p1.x + s.p2.x)/2 * viewTransform.scale + viewTransform.x + 10, top: (s.p1.y + s.p2.y)/2 * viewTransform.scale + viewTransform.y + 10, }}> {`L: ${(distance(s.p1, s.p2) / conversionFactor).toFixed(2)} ${unit} | A: ${angleBetween(s.p1, s.p2).toFixed(2)}°`} </div> ); })()}
-                {rotateState && ( <div className="absolute px-2 py-1 bg-purple-600 text-white text-xs rounded" style={{ left: mousePosition.x + 20, top: mousePosition.y + 20 }}> {`Rot: ${((angle(subtract(worldMousePos, rotateState.center)) - rotateState.startAngle + rotateState.initialRotation + 360) % 360).toFixed(1)}°`} {rotateState.center && ( <svg width="100%" height="100%" style={{ position: 'absolute', top: -mousePosition.y - 20, left: -mousePosition.x - 20 }}> <line x1={(rotateState.center.x * viewTransform.scale) + viewTransform.x} y1={(rotateState.center.y * viewTransform.scale) + viewTransform.y} x2={mousePosition.x + 20} y2={mousePosition.y + 20} stroke="purple" strokeWidth="1" strokeDasharray="4 2" /> </svg> )} </div> )}
+                {selectedShapeId && !selectedShapeIds.size && (() => { const s=shapes.find(x=>x.id===selectedShapeId); if(s && (s.type === 'line' || s.type === 'dimension')) return ( <div className="absolute px-2 py-1 bg-blue-600 text-white text-xs rounded" style={{ left: (s.p1.x + s.p2.x)/2 * viewTransform.scale + viewTransform.x + 10, top: (s.p1.y + s.p2.y)/2 * viewTransform.scale + viewTransform.y + 10, }}> {`L: ${(distance(s.p1, s.p2) / conversionFactor).toFixed(2)} ${unit} | A: ${angleBetween(s.p1, s.p2).toFixed(2)}°`} </div> ); })()}
+                {rotateState && ( <div className="absolute px-2 py-1 bg-purple-600 text-white text-xs rounded" style={{ left: mousePosition.x + 20, top: mousePosition.y + 20 }}> {`Rot: ${((angle(subtract(worldMousePos, rotateState.center)) - rotateState.startAngle + 360) % 360).toFixed(1)}°`} {rotateState.center && ( <svg width="100%" height="100%" style={{ position: 'absolute', top: 0, left: 0 }}> <line x1={(rotateState.center.x * viewTransform.scale) + viewTransform.x} y1={(rotateState.center.y * viewTransform.scale) + viewTransform.y} x2={mousePosition.x + 20} y2={mousePosition.y + 20} stroke="purple" strokeWidth="1" strokeDasharray="4 2" /> <circle cx={(rotateState.center.x * viewTransform.scale) + viewTransform.x} cy={(rotateState.center.y * viewTransform.scale) + viewTransform.y} r="4" fill="purple" /> </svg> )} </div> )}
                  <div className="absolute bottom-2 right-2 text-xs text-dark-base-content/60 bg-dark-base-100/50 px-2 py-1 rounded"> {`${(worldMousePos.x / conversionFactor).toFixed(2)} ${unit}, ${(worldMousePos.y / conversionFactor).toFixed(2)} ${unit}`} </div>
             </div>
         </div>

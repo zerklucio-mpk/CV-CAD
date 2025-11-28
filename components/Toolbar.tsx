@@ -50,9 +50,12 @@ const ToolButton: React.FC<ToolButtonProps> = ({ label, tool, icon, onClick, isD
 
 
 const Toolbar: React.FC = () => {
-    const { undo, redo, canUndo, canRedo, selectedShapeId, shapes, clipboard, setActiveTool } = useAppContext();
+    const { undo, redo, canUndo, canRedo, selectedShapeId, selectedShapeIds, shapes, clipboard, setActiveTool } = useAppContext();
     const selectedShape = useMemo(() => shapes.find(s => s.id === selectedShapeId), [shapes, selectedShapeId]);
     const [showIconMenu, setShowIconMenu] = useState(false);
+    
+    // Allow Move/Rotate if there is at least one selected item (single or multi)
+    const hasSelection = selectedShapeIds.size > 0;
 
     const handleIconToolSelect = (tool: Tool) => {
         setActiveTool(tool);
@@ -66,14 +69,14 @@ const Toolbar: React.FC = () => {
                 label="Mover" 
                 tool="move" 
                 icon={<MoveIcon className="w-6 h-6" />}
-                isDisabled={!selectedShapeId}
+                isDisabled={!hasSelection}
             />
             <ToolButton label="Desplazar" tool="pan" icon={<HandIcon className="w-6 h-6" />} />
             <ToolButton 
                 label="Rotar" 
                 tool="rotate" 
                 icon={<RotateCwIcon className="w-6 h-6" />} 
-                isDisabled={!selectedShapeId}
+                isDisabled={!hasSelection}
             />
              <hr className="w-full border-base-300 dark:border-dark-base-300 my-1"/>
             <ToolButton label="Copiar" tool="copy-area" icon={<CopyIcon className="w-6 h-6" />} />
